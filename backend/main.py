@@ -3,6 +3,7 @@ import sys
 from typing import List, Dict, Optional
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 # ==========================================
 # 【罠対策】Lambda環境での実行ルートズレを先回り
@@ -66,3 +67,48 @@ def init_data():
 def health_check():
     """インフラデプロイ時や疎通確認用のヘルスチェックエンドポイント"""
     return {"status": "ok"}
+
+# ==========================================
+# バリデーション用のデータ構造（リクエスト / レスポンス）
+# ==========================================
+
+class ValidationRequest(BaseModel):
+    teacher_id: str = "T001"
+    day: int = 0  # 0:月 ~ 4:金
+    period: int = 1  # 1限 ~ 7限
+    # 検証したい曜日の、1限から7限までの現在の教員IDの配置状況（空きはNone）
+    # 例: ["T001", None, "T002", "T001", None, None, None]
+    current_day_assignments: List[Optional[str]]
+
+class ValidationResponse(BaseModel):
+    is_valid: bool
+    error_message: Optional[str] = None
+
+# ==========================================
+# バリデーション エンドポイント
+# ==========================================
+
+@app.post("/api/validate-slot", response_model=ValidationResponse)
+def validate_slot(request: ValidationRequest):
+    """特定のコマに教員を配置できるか、Hard制約をチェックする"""
+    
+    # ターゲットとなる教員ID
+    t_id = request.teacher_id
+    # 現在のその曜日のスケジュール（1限〜7限のリスト）
+    schedule = request.current_day_assignments
+
+    # --------------------------------------------------
+    # 制約1: 1日最大4時間以内ルール
+    # --------------------------------------------------
+    # 現在その曜日に配置されているコマ数をカウント
+    current_count = schedule.count(t_id)
+    
+    # 4コマ以上ある場合は、新しく追加できないためエラーを返す
+    if current_count >= 4:
+        return ValidationResponse(
+            is_valid=False,
+            error_message=f"【1日上限エラー】選択された教員は、この曜日にすでに4コマ配置されています。"
+        )
+
+    # すべてのチェックを通過した場合
+    return ValidationResponse(is_valid=True)
