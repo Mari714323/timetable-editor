@@ -92,23 +92,36 @@ class ValidationResponse(BaseModel):
 def validate_slot(request: ValidationRequest):
     """特定のコマに教員を配置できるか、Hard制約をチェックする"""
     
-    # ターゲットとなる教員ID
     t_id = request.teacher_id
-    # 現在のその曜日のスケジュール（1限〜7限のリスト）
     schedule = request.current_day_assignments
+    
+    # 時限（1〜7限）を、配列のインデックス（0〜6）に変換
+    target_idx = request.period - 1
 
     # --------------------------------------------------
     # 制約1: 1日最大4時間以内ルール
     # --------------------------------------------------
-    # 現在その曜日に配置されているコマ数をカウント
     current_count = schedule.count(t_id)
-    
-    # 4コマ以上ある場合は、新しく追加できないためエラーを返す
     if current_count >= 4:
         return ValidationResponse(
             is_valid=False,
-            error_message=f"【1日上限エラー】選択された教員は、この曜日にすでに4コマ配置されています。"
+            error_message="【1日上限エラー】選択された教員は、この曜日にすでに4コマ配置されています。"
         )
 
-    # すべてのチェックを通過した場合
+    # --------------------------------------------------
+    # 制約2: 3時間連続授業の禁止ルール
+    # --------------------------------------------------
+    # 現在のスケジュールをコピーし、新しく配置したいコマに「仮配置」してみる
+    temp_schedule = list(schedule)
+    temp_schedule[target_idx] = t_id
+
+    # 1限から7限（インデックス0〜6）の配列をスキャンし、3連続している箇所がないか調べる
+    for i in range(len(temp_schedule) - 2):
+        if temp_schedule[i] == t_id and temp_schedule[i+1] == t_id and temp_schedule[i+2] == t_id:
+            return ValidationResponse(
+                is_valid=False,
+                error_message=f"【3連コマエラー】ここを埋めると、{i+1}限目から{i+3}限目まで3時間連続の授業になってしまいます。"
+            )
+
+    # すべてのHard制約をクリアした場合
     return ValidationResponse(is_valid=True)
