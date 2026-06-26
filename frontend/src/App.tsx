@@ -23,10 +23,12 @@ function App() {
   const days = ['月', '火', '水', '木', '金'];
   const periods = [1, 2, 3, 4, 5, 6, 7];
 
-// 2. 状態（State）の定義：最初は空っぽの配列 `[]` をセットしておく
+  /// 2. 状態（State）の定義：最初は空っぽの配列 `[]` をセットしておく
   const [subjects, setSubjects] = useState<Subject[]>([]);
   // 時間割の状態を追加（初期値は空のオブジェクト `{}`）
   const [timetable, setTimetable] = useState<Timetable>({});
+  // 現在選択されている授業カードの情報を保持するStateを追加
+  const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
 
   // 3. 画面が表示された瞬間に実行するロジック
   useEffect(() => {
@@ -92,17 +94,28 @@ function App() {
           <h2>配置待ちの授業</h2>
           <p>APIから取得した本物のデータ</p>
           <div className="card-list">
-            {subjects.map((subject) => (
-              <div 
-                key={subject.id} 
-                className="subject-card"
-                style={{ backgroundColor: subject.color }}
-              >
-                {/* バックエンドのデータ構造（target_classなど）に合わせて表示 */}
-                <div>{subject.title} ({subject.target_class})</div>
-                <small>担当教員ID: {subject.instructor_id}</small>
-              </div>
-            ))}
+            {subjects.map((subject) => {
+              // 今このカードが選択されているかどうかを判定
+              const isSelected = selectedSubject?.id === subject.id;
+              
+              return (
+                <div 
+                  key={subject.id} 
+                  className="subject-card"
+                  onClick={() => setSelectedSubject(subject)} // クリックされたら選択状態にする
+                  style={{ 
+                    backgroundColor: subject.color,
+                    // 選択されている場合は太い黒枠を表示、そうでない場合はなし
+                    border: isSelected ? '3px solid #2c3e50' : '3px solid transparent',
+                    transform: isSelected ? 'scale(1.02)' : 'none',
+                    transition: 'all 0.2s ease'
+                  }}
+                >
+                  <div>{subject.title} ({subject.target_class})</div>
+                  <small>担当教員ID: {subject.instructor_id}</small>
+                </div>
+              );
+            })}
           </div>
         </section>
       </main>
