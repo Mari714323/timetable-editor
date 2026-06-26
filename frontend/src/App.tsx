@@ -12,12 +12,21 @@ interface Subject {
   instructor_id: string;
 }
 
+// 時間割用の型定義を追加（例: {"0": {"1": "数学I", "2": null, ...}}）
+interface Timetable {
+  [day: string]: {
+    [period: string]: string | null;
+  };
+}
+
 function App() {
   const days = ['月', '火', '水', '木', '金'];
   const periods = [1, 2, 3, 4, 5, 6, 7];
 
-  // 2. 状態（State）の定義：最初は空っぽの配列 `[]` をセットしておく
+// 2. 状態（State）の定義：最初は空っぽの配列 `[]` をセットしておく
   const [subjects, setSubjects] = useState<Subject[]>([]);
+  // 時間割の状態を追加（初期値は空のオブジェクト `{}`）
+  const [timetable, setTimetable] = useState<Timetable>({});
 
   // 3. 画面が表示された瞬間に実行するロジック
   useEffect(() => {
@@ -28,7 +37,9 @@ function App() {
         // 取得したデータの中から「subjects（授業リスト）」を状態にセットする
         // これを実行した瞬間、下の画面（JSX）が自動で再描画されます！
         setSubjects(data.subjects);
+        setTimetable(data.timetable); // ← ここを追加：時間割データもStateに格納する
       })
+
       .catch((error) => {
         console.error('バックエンドからのデータ取得に失敗しました:', error);
       });
@@ -57,11 +68,19 @@ function App() {
               {periods.map((period) => (
                 <tr key={period}>
                   <th>{period}限</th>
-                  {days.map((day, dayIndex) => (
-                    <td key={dayIndex}>
-                      <span className="empty-slot">-</span>
-                    </td>
-                  ))}
+                  {days.map((day, dayIndex) => {
+                    // timetable[曜日ID][何限目] の値（授業名、または None/null）を取得
+                    const subjectTitle = timetable[dayIndex]?.[period];
+                    return (
+                      <td key={dayIndex}>
+                        {subjectTitle ? (
+                          <span className="allocated-slot">{subjectTitle}</span>
+                        ) : (
+                          <span className="empty-slot">-</span>
+                        )}
+                      </td>
+                    );
+                  })}
                 </tr>
               ))}
             </tbody>
