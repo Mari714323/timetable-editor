@@ -32,20 +32,71 @@ function App() {
 
   // 3. 画面が表示された瞬間に実行するロジック
   useEffect(() => {
-    // Viteのプロキシ経由で、FastAPIの初期化APIを叩く
     fetch('/api/init')
       .then((response) => response.json())
       .then((data) => {
-        // 取得したデータの中から「subjects（授業リスト）」を状態にセットする
-        // これを実行した瞬間、下の画面（JSX）が自動で再描画されます！
+        // バックエンドから届いた授業リストと時間割マトリクスをStateに格納
         setSubjects(data.subjects);
-        setTimetable(data.timetable); // ← ここを追加：時間割データもStateに格納する
+        setTimetable(data.timetable);
       })
-
       .catch((error) => {
         console.error('バックエンドからのデータ取得に失敗しました:', error);
       });
-  }, []); // 最後の `[]` は「最初の1回だけ実行する」というおまじないです
+  }, []);
+
+  // マス目がクリックされた時のバリデーション＆配置ロジック
+  const handleCellClick = (dayIndex: number, period: number) => {
+    // 授業カードが選ばれていない場合は何もしない
+    if (!selectedSubject) {
+      alert('まずは右側の「配置待ちの授業」からカードを1つ選択してください！');
+      return;
+    }
+
+    // バックエンドが求める「その曜日の現在の教員配置状況（1〜7限の配列）」をフロントのStateから復元
+    const currentDayAssignments = periods.map((p) => {
+      const title = timetable[dayIndex]?.[p];
+      if (!title) return null;
+      // 授業名から担当教員ID（T001など）を逆引きする
+      const found = subjects.find((s) => s.title === title);
+      return found ? found.instructor_id : null;
+    });
+
+    // バックエンドの ValidationRequest 型に合わせたリクエストボディの作成
+    const requestBody = {
+      teacher_id: selectedSubject.instructor_id,
+      day: dayIndex,
+      period: period,
+      current_day_assignments: currentDayAssignments,
+    };
+
+    // バックエンドのバリデーションAPIにPOSTリクエストを送信
+    fetch('/api/validate-slot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(requestBody),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.is_valid) {
+          // 【制約クリア！】時間割のStateを更新して、画面に授業名をセットする
+          setTimetable((prev) => ({
+            ...prev,
+            [dayIndex]: {
+              ...prev[dayIndex],
+              [period]: selectedSubject.title,
+            },
+          }));
+          // 配置に成功したら、カードの選択状態を綺麗にリセットする
+          setSelectedSubject(null);
+        } else {
+          // 【制約違反！】バックエンドから返ってきたエラーメッセージをそのまま画面にアラート表示
+          alert(data.error_message);
+        }
+      })
+      .catch((err) => {
+        console.error('バリデーション通信に失敗しました:', err);
+      });
+  };
 
   return (
     <div className="app-container">
@@ -74,11 +125,17 @@ function App() {
                     // timetable[曜日ID][何限目] の値（授業名、または None/null）を取得
                     const subjectTitle = timetable[dayIndex]?.[period];
                     return (
-                      <td key={dayIndex}>
+                      <td 
+                        key={dayIndex}
+                        onClick={() => handleCellClick(dayIndex, period)} // クリックされたら関数を発動
+                        style={{ cursor: 'pointer' }} // マウスを乗せたらポインターの形にする
+                      >
                         {subjectTitle ? (
-                          <span className="allocated-slot">{subjectTitle}</span>
+                          <span className="allocated-slot" style={{ fontWeight: 'bold', color: '#2c3e50' }}>
+                            {subjectTitle}
+                          </span>
                         ) : (
-                          <span className="empty-slot">-</span>
+                          <span className="empty-slot" style={{ color: '#bdc3c7' }}>-</span>
                         )}
                       </td>
                     );
