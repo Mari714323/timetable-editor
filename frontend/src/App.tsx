@@ -122,20 +122,33 @@ function App() {
                 <tr key={period}>
                   <th>{period}限</th>
                   {days.map((day, dayIndex) => {
-                    // timetable[曜日ID][何限目] の値（授業名、または None/null）を取得
                     const subjectTitle = timetable[dayIndex]?.[period];
+
+                    // ジョン先生(T002)が選択されていて、かつ火曜(1)・木曜(3)以外の場合は配置不可とする
+                    const isUnavailable = selectedSubject?.instructor_id === 'T002' && dayIndex !== 1 && dayIndex !== 3;
+
                     return (
                       <td 
                         key={dayIndex}
-                        onClick={() => handleCellClick(dayIndex, period)} // クリックされたら関数を発動
-                        style={{ cursor: 'pointer' }} // マウスを乗せたらポインターの形にする
+                        onClick={() => {
+                          // 配置不可のマス目の場合はクリックイベントを完全にブロックする
+                          if (isUnavailable) return;
+                          handleCellClick(dayIndex, period);
+                        }}
+                        style={{ 
+                          cursor: isUnavailable ? 'not-allowed' : 'pointer', // 禁止マークのカーソルにする
+                          backgroundColor: isUnavailable ? '#e2e8f0' : 'transparent', // 利用不可時はグレー背景
+                          transition: 'all 0.2s ease'
+                        }}
                       >
                         {subjectTitle ? (
                           <span className="allocated-slot" style={{ fontWeight: 'bold', color: '#2c3e50' }}>
                             {subjectTitle}
                           </span>
                         ) : (
-                          <span className="empty-slot" style={{ color: '#bdc3c7' }}>-</span>
+                          <span className="empty-slot" style={{ color: isUnavailable ? '#94a3b8' : '#bdc3c7' }}>
+                            {isUnavailable ? '休' : '-'}
+                          </span>
                         )}
                       </td>
                     );
