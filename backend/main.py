@@ -88,40 +88,41 @@ class ValidationResponse(BaseModel):
 # バリデーション エンドポイント
 # ==========================================
 
-@app.post("/api/validate-slot", response_model=ValidationResponse)
+@app.post("/api/validate-slot")
 def validate_slot(request: ValidationRequest):
-    """特定のコマに教員を配置できるか、Hard制約をチェックする"""
-    
-    t_id = request.teacher_id
-    schedule = request.current_day_assignments
-    
-    # 時限（1〜7限）を、配列のインデックス（0〜6）に変換
-    target_idx = request.period - 1
+    # --- 1. [新規追加] 非常勤講師の勤務可能曜日チェック (Hard制約) ---
+    # ジョン先生 (T002) は 火曜(1) と 木曜(3) だけ勤務可能
+    if request.teacher_id == "T002":
+        if request.day not in [1, 3]:
+            return {
+                "is_valid": False,
+                "error_message": "【勤務日外エラー】ジョン先生は火曜日と木曜日のみ勤務可能です。"
+            }
 
-    # --------------------------------------------------
-    # 制約1: 1日最大4時間以内ルール
-    # --------------------------------------------------
-    current_count = schedule.count(t_id)
+    # --- 2. 既存の制約：1日4時間上限チェック ---
+    # 現在の配置コマ数（Noneでないもの）をカウント
+    current_count = sum(1 for slot in request.current_day_assignments if slot is not None)
     if current_count >= 4:
-        return ValidationResponse(
-            is_valid=False,
-            error_message="【1日上限エラー】選択された教員は、この曜日にすでに4コマ配置されています。"
-        )
+        return {
+            "is_valid": False,
+            "error_message": f"【1日上限エラー】担当教員({request.teacher_id})の授業がこの日に4コマ配置されています。これ以上配置できません。"
+        }
 
-    # --------------------------------------------------
-    # 制約2: 3時間連続授業の禁止ルール
-    # --------------------------------------------------
-    # 現在のスケジュールをコピーし、新しく配置したいコマに「仮配置」してみる
-    temp_schedule = list(schedule)
-    temp_schedule[target_idx] = t_id
+    # --- 3. 既存の制約：3連コマ禁止チェック ---
+    # 新しく配置しようとしている前後のコマの状況を確認
+    p_idx = request.period - 1  # 1限〜7限を配列のインデックス(0〜6)に変換
+    assignments = list(request.current_day_assignments)
+    
+    # 仮想的に仮配置してみる
+    assignments[p_idx] = request.teacher_id
+    
+    # 3連続している箇所がないかスキャン
+    for i in range(len(assignments) - 2):
+        if assignments[i] == request.teacher_id and assignments[i+1] == request.teacher_id and assignments[i+2] == request.teacher_id:
+            return {
+                "is_valid": False,
+                "error_message": f"【3連コマエラー】担当教員({request.teacher_id})の授業が3コマ連続してしまうため配置できません。"
+            }
 
-    # 1限から7限（インデックス0〜6）の配列をスキャンし、3連続している箇所がないか調べる
-    for i in range(len(temp_schedule) - 2):
-        if temp_schedule[i] == t_id and temp_schedule[i+1] == t_id and temp_schedule[i+2] == t_id:
-            return ValidationResponse(
-                is_valid=False,
-                error_message=f"【3連コマエラー】ここを埋めると、{i+1}限目から{i+3}限目まで3時間連続の授業になってしまいます。"
-            )
-
-    # すべてのHard制約をクリアした場合
-    return ValidationResponse(is_valid=True)
+    # すべての制約をクリアした場合
+    return {"is_valid": True, "error_message": ""}
