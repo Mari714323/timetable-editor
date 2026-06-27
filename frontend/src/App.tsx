@@ -98,10 +98,46 @@ function App() {
       });
   };
 
+  // 現在の時間割StateをバックエンドのJSONファイルに保存する
+  const handleSave = () => {
+    fetch('/api/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ timetable }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        // バックエンドから返ってきたメッセージ（保存成功）をポップアップ表示
+        alert(data.message);
+      })
+      .catch((err) => {
+        console.error('保存通信に失敗しました:', err);
+        alert('保存に失敗しました。サーバーの状態を確認してください。');
+      });
+  };
+
   return (
     <div className="app-container">
-      <header>
+      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 20px' }}>
         <h1>時間割原案作成エディタ</h1>
+        {/* 【新規追加】保存用ボタン */}
+        <button 
+          onClick={handleSave}
+          style={{
+            padding: '10px 20px',
+            backgroundColor: '#2ecc71',
+            color: 'white',
+            border: 'none',
+            borderRadius: '4px',
+            cursor: 'pointer',
+            fontSize: '16px',
+            fontWeight: 'bold',
+            boxShadow: '0 2px 4px rgba(0,0,0,0.1)',
+            transition: 'background-color 0.2s'
+          }}
+        >
+          変更を保存する
+        </button>
       </header>
 
       <main className="main-content">
