@@ -1,4 +1,4 @@
-import json
+import sqlite3
 import os
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -6,8 +6,8 @@ from typing import List, Dict, Optional
 
 app = FastAPI()
 
-# データを保存するJSONファイルのパス
-DATA_FILE = "timetable_data.json"
+# 🗄️ データベースファイルのパス
+DB_FILE = "timetable.db"
 
 # 初期データ（配置待ちの授業リスト）
 MOCK_SUBJECTS = [
@@ -31,62 +31,111 @@ MOCK_SUBJECTS = [
     },
 ]
 
+# --- ⚙️ データベース初期化処理 ---
+def init_db():
+    """アプリ起動時にテーブルを作成し、35コマ分の空枠を準備する"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    # 1. テーブルの作成（曜日と時限の組み合わせを主キーにする）
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS timetable (
+            day_idx INTEGER,
+            period INTEGER,
+            subject_title TEXT,
+            PRIMARY KEY (day_idx, period)
+        )
+    """)
+    
+    # 2. 初期データ（35コマ分の空データ）がなければインサート
+    cursor.execute("SELECT COUNT(*) FROM timetable")
+    if cursor.fetchone()[0] == 0:
+        for day in range(5):
+            for prd in range(1, 8):
+                cursor.execute(
+                    "INSERT INTO timetable (day_idx, period, subject_title) VALUES (?, ?, NULL)",
+                    (day, prd)
+                )
+    
+    conn.commit()
+    conn.close()
 
-# 【ヘルパー関数】JSONファイルから時間割データを読み込む
-def load_timetable_data() -> dict:
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+# サーバー起動時に必ずDBを初期化する
+init_db()
 
-    # ファイルが存在しない場合は、初期状態の空の時間割（月〜金：0〜4、1〜7限）を作って返す
-    # フロントエンドが扱いやすいよう、キーは文字列にしておきます
-    default_timetable = {}
+
+# --- 🔄 データ変換ヘルパー関数 ---
+def load_timetable_from_db() -> dict:
+    """DBから時間割を取得し、フロントエンド（React）が扱いやすい辞書型に整形する"""
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT day_idx, period, subject_title FROM timetable")
+    rows = cursor.fetchall()
+    conn.close()
+
+    # 初期構造を辞書型で定義（React側の都合上、キーは文字列にします）
+    timetable_dict = {}
     for day_idx in range(5):
-        default_timetable[str(day_idx)] = {}
+        timetable_dict[str(day_idx)] = {}
         for period in range(1, 8):
-            default_timetable[str(day_idx)][str(period)] = None
-    return default_timetable
+            timetable_dict[str(day_idx)][str(period)] = None
+
+    # DBから取得したデータを辞書にマッピング
+    for day_idx, period, subject_title in rows:
+        timetable_dict[str(day_idx)][str(period)] = subject_title
+        
+    return timetable_dict
 
 
-# --- Pydanticの型定義（リクエストのバリデーション用） ---
+# --- Pydanticの型定義 ---
 class ValidationRequest(BaseModel):
     teacher_id: str
     day: int
     period: int
     current_day_assignments: List[Optional[str]]
 
-
-# 新設：保存リクエスト用の型定義
 class SaveTimetableRequest(BaseModel):
     timetable: Dict[str, Dict[str, Optional[str]]]
 
 
-# --- エンドポイントの実装 ---
+# --- 🚀 エンドポイントの実装 ---
 
-
-# 1. 初期データ取得API（JSONファイルからの読み込みに対応）
+# 1. 初期データ取得API（SQLiteからの読込に切り替え）
 @app.get("/api/init")
 def init_data():
-    timetable = load_timetable_data()
+    timetable = load_timetable_from_db()
     return {"subjects": MOCK_SUBJECTS, "timetable": timetable}
 
 
-# 2. 新設：時間割の保存API（JSONファイルへの書き込み）
+# 2. 時間割の保存API（JSON上書きから、SQLのUPDATE文に切り替え）
 @app.post("/api/save")
 def save_timetable(request: SaveTimetableRequest):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        # 読みやすさのためにインデントを整え、日本語が化けないように ensure_ascii=False にします
-        json.dump(request.timetable, f, ensure_ascii=False, indent=2)
-    return {"status": "success", "message": "時間割をJSONファイルに保存しました。"}
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    # フロントから届いたマトリクスデータをループして、1コマずつUPDATE文を発行
+    for day_str, periods in request.timetable.items():
+        day_idx = int(day_str)
+        for prd_str, subject_title in periods.items():
+            period = int(prd_str)
+            
+            cursor.execute("""
+                UPDATE timetable
+                SET subject_title = ?
+                WHERE day_idx = ? AND period = ?
+            """, (subject_title, day_idx, period))
+            
+    conn.commit()
+    conn.close()
+    return {"status": "success", "message": "時間割をSQLiteデータベースに保存しました。"}
 
 
-# 3. リアルタイム制約チェックAPI（前回作ったものをそのまま維持）
+# 3. リアルタイム制約チェックAPI（Hard制約 ＆ Soft制約を完全維持）
 @app.post("/api/validate-slot")
 def validate_slot(request: ValidationRequest):
-    # 戻り値の初期値（デフォルトは警告なし）
     warning_message = ""
 
-    # --- 1. 非常勤講師の勤務可能曜日チェック (Hard制約) ---
+    # ジョン先生の勤務曜日制限 (Hard)
     if request.teacher_id == "T002":
         if request.day not in [1, 3]:
             return {
@@ -95,7 +144,7 @@ def validate_slot(request: ValidationRequest):
                 "warning_message": ""
             }
 
-    # --- 2. 既存の制約：1日4時間上限チェック (Hard制約) ---
+    # 1日4時間上限チェック (Hard)
     current_count = sum(1 for slot in request.current_day_assignments if slot is not None)
     if current_count >= 4:
         return {
@@ -104,8 +153,8 @@ def validate_slot(request: ValidationRequest):
             "warning_message": ""
         }
 
-    # --- 3. 既存の制約：3連コマ禁止チェック (Hard制約) ---
-    p_idx = request.period - 1  # 1限〜7限を配列のインデックス(0〜6)に変換
+    # 3連コマ禁止チェック (Hard)
+    p_idx = request.period - 1
     assignments = list(request.current_day_assignments)
     assignments[p_idx] = request.teacher_id
     
@@ -117,12 +166,10 @@ def validate_slot(request: ValidationRequest):
                 "warning_message": ""
             }
 
-    # --- 4. [新規追加] Soft制約：金曜日の6限・7限のチェック ---
-    # 金曜日(day == 4) かつ 6限または7限(period が 6 か 7) の場合
+    # 金曜日の6限・7限チェック (Soft)
     if request.day == 4 and request.period in [6, 7]:
         warning_message = "【注意】金曜日の後半コマ（6・7限）への配置です。極力避けることが望ましいです。"
 
-    # Hard制約をすべてクリアした場合（Soft制約の警告を添えて返す）
     return {
         "is_valid": True, 
         "error_message": "",
