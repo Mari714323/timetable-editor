@@ -149,12 +149,22 @@ function App() {
           </div>
         </div>
 
-        <button 
-          onClick={handleSave} 
-          style={{ padding: '10px 20px', backgroundColor: '#2ecc71', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '16px', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}
-        >
-          変更を保存する
-        </button>
+        {/* ボタンを横に並べるためにdivで囲みます */}
+        <div style={{ display: 'flex', gap: '10px' }}>
+          <button 
+            // 💡 クリック時にCSV出力APIへ直接アクセスする
+            onClick={() => window.location.href = `/api/export-csv?target_class=${currentClass}`} 
+            style={{ padding: '10px 20px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '16px', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}
+          >
+            CSVをダウンロード
+          </button>
+          <button 
+            onClick={handleSave} 
+            style={{ padding: '10px 20px', backgroundColor: '#2ecc71', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '16px', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}
+          >
+            変更を保存する
+          </button>
+        </div>
       </header>
 
       <main className="main-content">
