@@ -48,6 +48,7 @@ function App() {
         day: dayIndex,
         period: period,
         current_day_assignments: currentDayAssignments,
+        target_class: currentClass, // バリデーションAPIにも現在のクラスを伝える
       }),
     })
       .then((res) => res.json())

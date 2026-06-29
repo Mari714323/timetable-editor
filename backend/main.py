@@ -117,6 +117,7 @@ class ValidationRequest(BaseModel):
     day: int
     period: int
     current_day_assignments: List[Optional[str]]
+    target_class: str  # 🏫 【新規追加】バリデーション時にも対象クラスを受け取る
 
 # 保存リクエストにどのクラスのデータかを格納する target_class を追加
 class SaveTimetableRequest(BaseModel):
@@ -164,6 +165,30 @@ def save_timetable(request: SaveTimetableRequest):
 def validate_slot(request: ValidationRequest):
     warning_message = ""
 
+    # 他クラスでのダブルブッキング検知 (Hard制約)
+    # DBに直接アクセスし、画面に見えていない別クラスの状況を確認する
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT target_class, subject_title
+        FROM timetable
+        WHERE day_idx = ? AND period = ? AND target_class != ? AND subject_title IS NOT NULL
+    """, (request.day, request.period, request.target_class))
+    concurrent_classes = cursor.fetchall()
+    conn.close()
+
+    # DBから取得した他クラスの授業について、先生が重複していないかチェック
+    for other_class, title in concurrent_classes:
+        # 授業タイトルから、MOCK_SUBJECTS内の担当教員を割り出す
+        for subject in MOCK_SUBJECTS:
+            if subject["title"] == title and subject["instructor_id"] == request.teacher_id:
+                return {
+                    "is_valid": False,
+                    "error_message": f"【重複エラー】担当教員({request.teacher_id})は、同じコマにすでに {other_class} クラスで「{title}」を担当しています。先生の体が足りません！",
+                    "warning_message": ""
+                }
+
+    # 以降は既存のロジックそのまま
     if request.teacher_id == "T002":
         if request.day not in [1, 3]:
             return {
