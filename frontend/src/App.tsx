@@ -1,15 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import './App.css';
-
-interface Subject {
-  id: string;
-  title: string;
-  target_class: string;
-  credits: number;
-  type: string;
-  color: string;
-  instructor_id: string;
-}
+import type { Subject } from './types'; // 💡 新しく作った型ファイルを読み込む
+import { Sidebar } from './components/Sidebar'; // 💡 新しく作ったサイドバーを読み込む
 
 function App() {
   const [subjects, setSubjects] = useState<Subject[]>([]);
@@ -178,7 +170,7 @@ function App() {
               {periods.map((period) => (
                 <tr key={period}>
                   <th>{period}限</th>
-                  {days.map((day, dayIndex) => {
+                  {days.map((_day, dayIndex) => {
                     const subjectTitle = timetable[dayIndex]?.[period];
                     const isUnavailable = selectedSubject?.instructor_id === 'T002' && dayIndex !== 1 && dayIndex !== 3;
 
@@ -232,43 +224,16 @@ function App() {
           </table>
         </section>
 
-        <section className="sidebar-section">
-          {/* 🏫 表示を動的に変更 */}
-          <h2>{currentClass} の配置待ち授業</h2>
-          <div className="subjects-list" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            {/* 🔄 【修正】全授業ではなく、フィルター後の filteredSubjects をループするように変更 */}
-            {filteredSubjects.map((subject) => {
-              const isSelected = selectedSubject?.id === subject.id;
-              return (
-                <div
-                  key={subject.id}
-                  draggable={true}
-                  onDragStart={(e) => handleDragStart(e, subject)}
-                  onClick={() => setSelectedSubject(subject)}
-                  style={{
-                    backgroundColor: subject.color,
-                    padding: '14px',
-                    borderRadius: '8px',
-                    border: isSelected ? '3px solid #2c3e50' : '1px solid #cbd5e1',
-                    cursor: 'grab',
-                    boxShadow: isSelected ? '0 4px 6px rgba(0,0,0,0.15)' : '0 2px 4px rgba(0,0,0,0.05)',
-                    transition: 'all 0.15s ease',
-                  }}
-                >
-                  <div style={{ fontWeight: 'bold', fontSize: '16px', marginBottom: '4px', color: '#1e293b' }}>
-                    {subject.title}
-                  </div>
-                  <div style={{ fontSize: '13px', color: '#64748b' }}>
-                    クラス: {subject.target_class} | コマ数: {subject.credits} | 担当: {subject.instructor_id}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </section>
+        {/* 💡 切り出したコンポーネントに、Props（引数）を渡して呼び出すだけ！ */}
+        <Sidebar
+          currentClass={currentClass}
+          filteredSubjects={filteredSubjects}
+          selectedSubject={selectedSubject}
+          onSubjectSelect={setSelectedSubject}
+          onDragStart={handleDragStart}
+        />
       </main>
     </div>
   );
 }
-
 export default App;
