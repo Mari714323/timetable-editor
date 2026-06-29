@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import './App.css';
 
-// 授業データの型定義（str から string に修正）
 interface Subject {
   id: string;
   title: string;
@@ -15,22 +14,27 @@ interface Subject {
 function App() {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
-  // 連想配列のキー型を str から string に修正
   const [timetable, setTimetable] = useState<{ [key: string]: { [key: string]: string | null } }>({});
+  
+  // 🏫 【新規追加】現在選択中のクラスを管理するState（初期値は '1A'）
+  const [currentClass, setCurrentClass] = useState<string>('1A');
 
   const days = ['月', '火', '水', '木', '金'];
   const periods = [1, 2, 3, 4, 5, 6, 7];
 
-  // 1. 初期データの取得
+  // 🔄 【修正】初期データ取得を、選択中のクラスが変わるたびに再実行するように変更
+  // 依存配列（第二引数）に currentClass を入れることで、クラス切り替え時に自動でAPIが走ります
   useEffect(() => {
-    fetch('/api/init')
+    fetch(`/api/init?target_class=${currentClass}`)
       .then((res) => res.json())
       .then((data) => {
         setSubjects(data.subjects);
         setTimetable(data.timetable);
+        // クラスが切り替わったら、選択中の授業カードを一度クリアして誤配置を防ぐ
+        setSelectedSubject(null);
       })
-      .catch((err) => console.error('初期データの取得に失敗しました:', err));
-  }, []);
+      .catch((err) => console.error('データの取得に失敗しました:', err));
+  }, [currentClass]);
 
   // 共通の配置ロジック
   const executeAssignment = (subject: Subject, dayIndex: number, period: number) => {
@@ -69,13 +73,11 @@ function App() {
       });
   };
 
-  // クリック配置用の関数
   const handleCellClick = (dayIndex: number, period: number) => {
     if (!selectedSubject) return;
     executeAssignment(selectedSubject, dayIndex, period);
   };
 
-  // 指定されたマスの授業を消去するロジック
   const handleClearCell = (dayIndex: number, period: number) => {
     setTimetable((prev) => ({
       ...prev,
@@ -86,12 +88,15 @@ function App() {
     }));
   };
 
-  // 時間割の保存ロジック
+  // 🔄 【修正】保存時に「どのクラスの時間割か」をバックエンドに伝えるよう拡張
   const handleSave = () => {
     fetch('/api/save', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ timetable }),
+      body: JSON.stringify({ 
+        target_class: currentClass, // クラス名を同梱
+        timetable 
+      }),
     })
       .then((res) => res.json())
       .then((data) => {
@@ -103,8 +108,6 @@ function App() {
       });
   };
 
-  // --- ドラッグ＆ドロップ用のイベントハンドラー ---
-  
   const handleDragStart = (e: React.DragEvent, subject: Subject) => {
     e.dataTransfer.setData('text/plain', JSON.stringify(subject));
   };
@@ -129,24 +132,33 @@ function App() {
     }
   };
 
+  // 💡 【新規追加】右側のサイドバーに表示する授業を、現在選択中のクラスの物だけにフィルターする
+  const filteredSubjects = subjects.filter((s) => s.target_class === currentClass);
+
   return (
     <div className="app-container">
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 20px' }}>
-        <h1>時間割原案作成エディタ</h1>
-        {/* 【修正】自動重量 を fontWeight: 'bold' に修正 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
+          <h1>時間割原案作成エディタ</h1>
+          
+          {/* 🏫 【新規追加】クラス選択用のドロップダウンメニュー */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: '#f1f5f9', padding: '6px 12px', borderRadius: '6px', border: '1px solid #cbd5e1' }}>
+            <label htmlFor="class-select" style={{ fontWeight: 'bold', color: '#475569', fontSize: '14px' }}>対象クラス:</label>
+            <select
+              id="class-select"
+              value={currentClass}
+              onChange={(e) => setCurrentClass(e.target.value)}
+              style={{ padding: '4px 8px', fontSize: '16px', fontWeight: 'bold', borderRadius: '4px', border: '1px solid #94a3b8', cursor: 'pointer' }}
+            >
+              <option value="1A">1A</option>
+              <option value="1B">1B</option>
+            </select>
+          </div>
+        </div>
+
         <button 
           onClick={handleSave} 
-          style={{ 
-            padding: '10px 20px', 
-            backgroundColor: '#2ecc71', 
-            color: 'white', 
-            border: 'none', 
-            borderRadius: '4px', 
-            cursor: 'pointer', 
-            fontSize: '16px', 
-            fontWeight: 'bold', 
-            boxShadow: '0 2px 4px rgba(0,0,0,0.1)' 
-          }}
+          style={{ padding: '10px 20px', backgroundColor: '#2ecc71', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '16px', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}
         >
           変更を保存する
         </button>
@@ -220,9 +232,11 @@ function App() {
         </section>
 
         <section className="sidebar-section">
-          <h2>配置待ちの授業</h2>
+          {/* 🏫 表示を動的に変更 */}
+          <h2>{currentClass} の配置待ち授業</h2>
           <div className="subjects-list" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
-            {subjects.map((subject) => {
+            {/* 🔄 【修正】全授業ではなく、フィルター後の filteredSubjects をループするように変更 */}
+            {filteredSubjects.map((subject) => {
               const isSelected = selectedSubject?.id === subject.id;
               return (
                 <div

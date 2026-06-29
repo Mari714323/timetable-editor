@@ -6,10 +6,9 @@ from typing import List, Dict, Optional
 
 app = FastAPI()
 
-# 🗄️ データベースファイルのパス
 DB_FILE = "timetable.db"
 
-# 初期データ（配置待ちの授業リスト）
+# 🏫 複数クラスに対応した配置待ちの授業マスタ（1Aと1Bを用意）
 MOCK_SUBJECTS = [
     {
         "id": "S001",
@@ -29,58 +28,83 @@ MOCK_SUBJECTS = [
         "color": "#fee2e2",
         "instructor_id": "T002",
     },
+    # --- ここから1Bの授業を追加 ---
+    {
+        "id": "S003",
+        "title": "化学基礎",
+        "target_class": "1B",
+        "credits": 2,
+        "type": "Required",
+        "color": "#fef08a",
+        "instructor_id": "T001",
+    },
+    {
+        "id": "S004",
+        "title": "現代の国語",
+        "target_class": "1B",
+        "credits": 3,
+        "type": "Required",
+        "color": "#bbf7d0",
+        "instructor_id": "T003",
+    },
 ]
 
-# --- ⚙️ データベース初期化処理 ---
+# --- ⚙️ データベース初期化処理（スキーマ拡張版） ---
 def init_db():
-    """アプリ起動時にテーブルを作成し、35コマ分の空枠を準備する"""
+    """アプリ起動時にテーブルを作成し、1A・1Bそれぞれの空枠（35コマ×2クラス = 70レコード）を準備する"""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     
-    # 1. テーブルの作成（曜日と時限の組み合わせを主キーにする）
+    # 🔑 target_class を含めた3つの複合主キー（PK）に変更
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS timetable (
+            target_class TEXT,
             day_idx INTEGER,
             period INTEGER,
             subject_title TEXT,
-            PRIMARY KEY (day_idx, period)
+            PRIMARY KEY (target_class, day_idx, period)
         )
     """)
     
-    # 2. 初期データ（35コマ分の空データ）がなければインサート
+    # クラスごとに初期枠がなければインサート（今回は1Aと1B）
     cursor.execute("SELECT COUNT(*) FROM timetable")
     if cursor.fetchone()[0] == 0:
-        for day in range(5):
-            for prd in range(1, 8):
-                cursor.execute(
-                    "INSERT INTO timetable (day_idx, period, subject_title) VALUES (?, ?, NULL)",
-                    (day, prd)
-                )
+        for target_class in ["1A", "1B"]:
+            for day in range(5):
+                for prd in range(1, 8):
+                    cursor.execute(
+                        "INSERT INTO timetable (target_class, day_idx, period, subject_title) VALUES (?, ?, ?, NULL)",
+                        (target_class, day, prd)
+                    )
     
     conn.commit()
     conn.close()
 
-# サーバー起動時に必ずDBを初期化する
+# サーバー起動時に新しいスキーマでDBを初期化
 init_db()
 
 
-# --- 🔄 データ変換ヘルパー関数 ---
-def load_timetable_from_db() -> dict:
-    """DBから時間割を取得し、フロントエンド（React）が扱いやすい辞書型に整形する"""
+# --- 🔄 データ変換ヘルパー関数（クラス指定版） ---
+def load_timetable_from_db(target_class: str) -> dict:
+    """指定されたクラスの時間割のみをSELECTし、Reactが扱いやすい辞書型にマッピングする"""
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("SELECT day_idx, period, subject_title FROM timetable")
+    
+    # 🔍 WHERE句でクラスを絞り込む
+    cursor.execute("""
+        SELECT day_idx, period, subject_title 
+        FROM timetable 
+        WHERE target_class = ?
+    """, (target_class,))
     rows = cursor.fetchall()
     conn.close()
 
-    # 初期構造を辞書型で定義（React側の都合上、キーは文字列にします）
     timetable_dict = {}
     for day_idx in range(5):
         timetable_dict[str(day_idx)] = {}
         for period in range(1, 8):
             timetable_dict[str(day_idx)][str(period)] = None
 
-    # DBから取得したデータを辞書にマッピング
     for day_idx, period, subject_title in rows:
         timetable_dict[str(day_idx)][str(period)] = subject_title
         
@@ -94,48 +118,52 @@ class ValidationRequest(BaseModel):
     period: int
     current_day_assignments: List[Optional[str]]
 
+# 保存リクエストにどのクラスのデータかを格納する target_class を追加
 class SaveTimetableRequest(BaseModel):
+    target_class: str
     timetable: Dict[str, Dict[str, Optional[str]]]
 
 
 # --- 🚀 エンドポイントの実装 ---
 
-# 1. 初期データ取得API（SQLiteからの読込に切り替え）
+# 1. 初期データ取得API（クエリパラメータでクラスを受け取るよう拡張）
+# 例: /api/init?target_class=1A
 @app.get("/api/init")
-def init_data():
-    timetable = load_timetable_from_db()
+def init_data(target_class: str = "1A"):
+    # 指定されたクラスの時間割データを取得
+    timetable = load_timetable_from_db(target_class)
+    # 授業マスタは全クラス分をそのまま返して、フロント側でフィルタリングさせます
     return {"subjects": MOCK_SUBJECTS, "timetable": timetable}
 
 
-# 2. 時間割の保存API（JSON上書きから、SQLのUPDATE文に切り替え）
+# 2. 時間割の保存API（クラスを指定したUPDATE文に進化）
 @app.post("/api/save")
 def save_timetable(request: SaveTimetableRequest):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     
-    # フロントから届いたマトリクスデータをループして、1コマずつUPDATE文を発行
     for day_str, periods in request.timetable.items():
         day_idx = int(day_str)
         for prd_str, subject_title in periods.items():
             period = int(prd_str)
             
+            # WHERE句に target_class を指定して、他のクラスのデータを汚さないように安全にUPDATE
             cursor.execute("""
                 UPDATE timetable
                 SET subject_title = ?
-                WHERE day_idx = ? AND period = ?
-            """, (subject_title, day_idx, period))
+                WHERE target_class = ? AND day_idx = ? AND period = ?
+            """, (subject_title, request.target_class, day_idx, period))
             
     conn.commit()
     conn.close()
-    return {"status": "success", "message": "時間割をSQLiteデータベースに保存しました。"}
+    return {"status": "success", "message": f"{request.target_class}クラスの時間割をデータベースに保存しました。"}
 
 
-# 3. リアルタイム制約チェックAPI（Hard制約 ＆ Soft制約を完全維持）
+# 3. リアルタイム制約チェックAPI（前回までのHard/Soft制約を完全維持）
 @app.post("/api/validate-slot")
 def validate_slot(request: ValidationRequest):
     warning_message = ""
 
-    # ジョン先生の勤務曜日制限 (Hard)
     if request.teacher_id == "T002":
         if request.day not in [1, 3]:
             return {
@@ -144,7 +172,6 @@ def validate_slot(request: ValidationRequest):
                 "warning_message": ""
             }
 
-    # 1日4時間上限チェック (Hard)
     current_count = sum(1 for slot in request.current_day_assignments if slot is not None)
     if current_count >= 4:
         return {
@@ -153,7 +180,6 @@ def validate_slot(request: ValidationRequest):
             "warning_message": ""
         }
 
-    # 3連コマ禁止チェック (Hard)
     p_idx = request.period - 1
     assignments = list(request.current_day_assignments)
     assignments[p_idx] = request.teacher_id
@@ -166,7 +192,6 @@ def validate_slot(request: ValidationRequest):
                 "warning_message": ""
             }
 
-    # 金曜日の6限・7限チェック (Soft)
     if request.day == 4 and request.period in [6, 7]:
         warning_message = "【注意】金曜日の後半コマ（6・7限）への配置です。極力避けることが望ましいです。"
 
