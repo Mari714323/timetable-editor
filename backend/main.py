@@ -1,6 +1,9 @@
 import sqlite3
 import os
+import csv 
+import io
 from fastapi import FastAPI
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 
@@ -225,3 +228,41 @@ def validate_slot(request: ValidationRequest):
         "error_message": "",
         "warning_message": warning_message
     }
+
+# 4. CSVダウンロードAPI
+@app.get("/api/export-csv")
+def export_csv(target_class: str = "1A"):
+    # 既存のヘルパー関数を使って、DBからデータを取得
+    timetable = load_timetable_from_db(target_class)
+    
+    # メモリ上にCSV文字列を作成するための器を用意
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # 1行目：ヘッダー（見出し）を書き込む
+    days_kanji = ['月', '火', '水', '木', '金']
+    writer.writerow(['時限'] + days_kanji)
+    
+    # 2行目以降：1限〜7限までのデータをループして書き込む
+    for period in range(1, 8):
+        row = [f"{period}限"] # 行の最初は「○限」
+        for day_idx in range(5):
+            subject = timetable[str(day_idx)][str(period)]
+            # 授業が入っていればその名前、なければ「空き」とする
+            row.append(subject if subject else "空き")
+        writer.writerow(row)
+    
+    # 書き込み終わったら、読み取り位置を先頭に戻す
+    output.seek(0)
+    
+    # ブラウザに「これはダウンロード用のファイルですよ」と伝えるためのヘッダー
+    headers = {
+        'Content-Disposition': f'attachment; filename="timetable_{target_class}.csv"'
+    }
+    
+    # 日本語がExcelで文字化けしないように utf-8-sig で出力する
+    return StreamingResponse(
+        (line.encode('utf-8-sig') for line in output), 
+        media_type="text/csv", 
+        headers=headers
+    )
