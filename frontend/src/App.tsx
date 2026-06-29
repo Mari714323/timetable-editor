@@ -78,7 +78,11 @@ function App() {
       .then((res) => res.json())
       .then((data) => {
         if (data.is_valid) {
-          // 【制約クリア！】時間割のStateを更新して、画面に授業名をセットする
+          // 【新規追加】Soft制約の警告メッセージがあれば、配置をブロックせずにアラートだけ出す
+          if (data.warning_message) {
+            alert(data.warning_message);
+          }
+
           setTimetable((prev) => ({
             ...prev,
             [dayIndex]: {
@@ -86,16 +90,24 @@ function App() {
               [period]: selectedSubject.title,
             },
           }));
-          // 配置に成功したら、カードの選択状態を綺麗にリセットする
-          setSelectedSubject(null);
         } else {
-          // 【制約違反！】バックエンドから返ってきたエラーメッセージをそのまま画面にアラート表示
           alert(data.error_message);
         }
       })
       .catch((err) => {
         console.error('バリデーション通信に失敗しました:', err);
       });
+  };
+
+  // 【新規追加】指定されたマスの授業を消去（nullに）するロジック
+  const handleClearCell = (dayIndex: number, period: number) => {
+    setTimetable((prev) => ({
+      ...prev,
+      [dayIndex]: {
+        ...prev[dayIndex],
+        [period]: null, // 指定されたコマを空っぽにする
+      },
+    }));
   };
 
   // 現在の時間割StateをバックエンドのJSONファイルに保存する
@@ -172,15 +184,41 @@ function App() {
                           handleCellClick(dayIndex, period);
                         }}
                         style={{ 
-                          cursor: isUnavailable ? 'not-allowed' : 'pointer', // 禁止マークのカーソルにする
-                          backgroundColor: isUnavailable ? '#e2e8f0' : 'transparent', // 利用不可時はグレー背景
+                          cursor: isUnavailable ? 'not-allowed' : 'pointer',
+                          backgroundColor: isUnavailable ? '#e2e8f0' : 'transparent',
                           transition: 'all 0.2s ease'
                         }}
                       >
                         {subjectTitle ? (
-                          <span className="allocated-slot" style={{ fontWeight: 'bold', color: '#2c3e50' }}>
-                            {subjectTitle}
-                          </span>
+                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 4px' }}>
+                            <span className="allocated-slot" style={{ fontWeight: 'bold', color: '#2c3e50' }}>
+                              {/* 【新規追加】金曜日(dayIndexが4)の6限・7限(periodが6または7)の場合は警告マークを表示 */}
+                              {dayIndex === 4 && (period === 6 || period === 7) && (
+                                <span style={{ marginRight: '4px', cursor: 'help' }} title="金曜後半のコマです">⚠️</span>
+                              )}
+                              {subjectTitle}
+                            </span>
+                            {/* 【新規追加】消去用の×ボタン */}
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation(); // 💥 超重要：親の td の onClick が発動するのを完全に阻止する！
+                                handleClearCell(dayIndex, period);
+                              }}
+                              style={{
+                                background: 'none',
+                                border: 'none',
+                                color: '#e74c3c',
+                                cursor: 'pointer',
+                                fontWeight: 'bold',
+                                marginLeft: '6px',
+                                padding: '0 4px',
+                                fontSize: '14px'
+                              }}
+                              title="この授業を外す"
+                            >
+                              ×
+                            </button>
+                          </div>
                         ) : (
                           <span className="empty-slot" style={{ color: isUnavailable ? '#94a3b8' : '#bdc3c7' }}>
                             {isUnavailable ? '休' : '-'}

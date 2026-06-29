@@ -83,38 +83,48 @@ def save_timetable(request: SaveTimetableRequest):
 # 3. リアルタイム制約チェックAPI（前回作ったものをそのまま維持）
 @app.post("/api/validate-slot")
 def validate_slot(request: ValidationRequest):
-    # 非常勤講師の勤務可能曜日チェック (Hard制約)
+    # 戻り値の初期値（デフォルトは警告なし）
+    warning_message = ""
+
+    # --- 1. 非常勤講師の勤務可能曜日チェック (Hard制約) ---
     if request.teacher_id == "T002":
         if request.day not in [1, 3]:
             return {
                 "is_valid": False,
                 "error_message": "【勤務日外エラー】ジョン先生は火曜日と木曜日のみ勤務可能です。",
+                "warning_message": ""
             }
 
-    # 1日4時間上限チェック
-    current_count = sum(
-        1 for slot in request.current_day_assignments if slot is not None
-    )
+    # --- 2. 既存の制約：1日4時間上限チェック (Hard制約) ---
+    current_count = sum(1 for slot in request.current_day_assignments if slot is not None)
     if current_count >= 4:
         return {
             "is_valid": False,
             "error_message": f"【1日上限エラー】担当教員({request.teacher_id})の授業がこの日に4コマ配置されています。これ以上配置できません。",
+            "warning_message": ""
         }
 
-    # 3連コマ禁止チェック
-    p_idx = request.period - 1
+    # --- 3. 既存の制約：3連コマ禁止チェック (Hard制約) ---
+    p_idx = request.period - 1  # 1限〜7限を配列のインデックス(0〜6)に変換
     assignments = list(request.current_day_assignments)
     assignments[p_idx] = request.teacher_id
-
+    
     for i in range(len(assignments) - 2):
-        if (
-            assignments[i] == request.teacher_id
-            and assignments[i + 1] == request.teacher_id
-            and assignments[i + 2] == request.teacher_id
-        ):
+        if assignments[i] == request.teacher_id and assignments[i+1] == request.teacher_id and assignments[i+2] == request.teacher_id:
             return {
                 "is_valid": False,
                 "error_message": f"【3連コマエラー】担当教員({request.teacher_id})の授業が3コマ連続してしまうため配置できません。",
+                "warning_message": ""
             }
 
-    return {"is_valid": True, "error_message": ""}
+    # --- 4. [新規追加] Soft制約：金曜日の6限・7限のチェック ---
+    # 金曜日(day == 4) かつ 6限または7限(period が 6 か 7) の場合
+    if request.day == 4 and request.period in [6, 7]:
+        warning_message = "【注意】金曜日の後半コマ（6・7限）への配置です。極力避けることが望ましいです。"
+
+    # Hard制約をすべてクリアした場合（Soft制約の警告を添えて返す）
+    return {
+        "is_valid": True, 
+        "error_message": "",
+        "warning_message": warning_message
+    }
