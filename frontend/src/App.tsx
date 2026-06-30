@@ -3,16 +3,81 @@ import './App.css';
 import type { Subject } from './types';
 import { Sidebar } from './components/Sidebar';
 
+interface Teacher {
+  id: string;
+  name: string;
+  available_days: number[];
+  max_periods: number;
+}
+
+// 💡 【修正】ループの中で直接useStateを使わないよう、先生1人分の行を別コンポーネントに分離
+function TeacherRuleItem({ teacher, daysList, onSave }: { teacher: Teacher, daysList: string[], onSave: (id: string, days: number[], max: number) => void }) {
+  const [localDays, setLocalDays] = useState<number[]>(teacher.available_days);
+  const [localMax, setLocalMax] = useState<number>(teacher.max_periods);
+
+  const handleDayToggle = (dayIdx: number) => {
+    if (localDays.includes(dayIdx)) {
+      setLocalDays(localDays.filter(d => d !== dayIdx));
+    } else {
+      setLocalDays([...localDays, dayIdx].sort());
+    }
+  };
+
+  return (
+    <div style={{ backgroundColor: '#f8fafc', padding: '15px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px' }}>
+        <span style={{ fontWeight: 'bold', fontSize: '16px', color: '#334155' }}>
+          {teacher.name} <span style={{ fontSize: '12px', color: '#94a3b8' }}>({teacher.id})</span>
+        </span>
+        <button 
+          onClick={() => onSave(teacher.id, localDays, localMax)}
+          style={{ padding: '6px 12px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
+        >
+          保存
+        </button>
+      </div>
+      
+      <div style={{ display: 'flex', alignItems: 'center', gap: '20px', fontSize: '14px' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontWeight: 'bold', color: '#475569' }}>出勤曜日:</span>
+          {daysList.map((dayName, idx) => (
+            <label key={idx} style={{ display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }}>
+              <input 
+                type="checkbox" 
+                checked={localDays.includes(idx)} 
+                onChange={() => handleDayToggle(idx)}
+              />
+              {dayName}
+            </label>
+          ))}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontWeight: 'bold', color: '#475569' }}>1日の上限コマ数:</span>
+          <input 
+            type="number" 
+            min="1" max="7" 
+            value={localMax} 
+            onChange={(e) => setLocalMax(parseInt(e.target.value) || 4)}
+            style={{ width: '50px', padding: '4px', borderRadius: '4px', border: '1px solid #cbd5e1', textAlign: 'center' }}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
 function App() {
   const [role, setRole] = useState<'kyomu' | 'kyoka' | null>(null);
   const [subjects, setSubjects] = useState<Subject[]>([]);
+  const [teachers, setTeachers] = useState<Teacher[]>([]);
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
   const [timetable, setTimetable] = useState<{ [key: string]: { [key: string]: string | null } }>({});
   const [workload, setWorkload] = useState<{ [key: string]: number }>({});
   const [currentClass, setCurrentClass] = useState<string>('1A');
-  
-  // 💡 【復旧】ドラッグ中の状態管理
   const [draggingSubject, setDraggingSubject] = useState<Subject | null>(null);
+  
+  const [isTeacherModalOpen, setIsTeacherModalOpen] = useState(false);
 
   const days = ['月', '火', '水', '木', '金'];
   const periods = [1, 2, 3, 4, 5, 6, 7];
@@ -24,23 +89,26 @@ function App() {
       .catch(err => console.error('稼働状況の取得に失敗しました:', err));
   };
 
-  useEffect(() => {
-    if (role !== 'kyomu') return;
-
+  const fetchAllData = () => {
     fetch(`/api/init?target_class=${currentClass}`)
       .then((res) => res.json())
       .then((data) => {
         setSubjects(data.subjects);
         setTimetable(data.timetable);
+        setTeachers(data.teachers || []);
         setSelectedSubject(null);
         fetchWorkload();
       })
       .catch((err) => console.error('データの取得に失敗しました:', err));
+  };
+
+  useEffect(() => {
+    if (role === null) return;
+    fetchAllData();
   }, [currentClass, role]);
 
   const executeAssignment = (subject: Subject, dayIndex: number, period: number, fromDay?: number, fromPeriod?: number) => {
     const currentDayAssignments = periods.map((p) => timetable[dayIndex]?.[p] || null);
-
     if (fromDay !== undefined && fromPeriod !== undefined && fromDay === dayIndex) {
       currentDayAssignments[fromPeriod - 1] = null;
     }
@@ -101,13 +169,11 @@ function App() {
       });
   };
 
-  // 💡 【復旧】サイドバーからのドラッグ開始時にStateをセット
   const handleDragStart = (e: React.DragEvent, subject: Subject) => {
     e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'sidebar', subject }));
     setDraggingSubject(subject);
   };
 
-  // 💡 【復旧】セルからのドラッグ開始時にStateをセット
   const handleCellDragStart = (e: React.DragEvent, subjectTitle: string, dayIndex: number, period: number) => {
     const subject = subjects.find(s => s.title === subjectTitle && s.target_class === currentClass);
     if (subject) {
@@ -116,18 +182,12 @@ function App() {
     }
   };
 
-  // 💡 【復旧】ドラッグ終了時のリセット
-  const handleDragEnd = () => {
-    setDraggingSubject(null);
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-  };
+  const handleDragEnd = () => setDraggingSubject(null);
+  const handleDragOver = (e: React.DragEvent) => e.preventDefault();
 
   const handleDrop = (e: React.DragEvent, dayIndex: number, period: number) => {
     e.preventDefault();
-    setDraggingSubject(null); // ドロップ時もリセット
+    setDraggingSubject(null);
 
     const rawData = e.dataTransfer.getData('text/plain');
     if (!rawData) return;
@@ -137,12 +197,14 @@ function App() {
       let fromDay = parsedData.source === 'timetable' ? parsedData.fromDay : undefined;
       let fromPeriod = parsedData.source === 'timetable' ? parsedData.fromPeriod : undefined;
 
-      const isUnavailable = draggedSubject.instructor_id === 'T002' && dayIndex !== 1 && dayIndex !== 3;
+      let isUnavailable = false;
+      const teacher = teachers.find(t => t.id === draggedSubject.instructor_id);
+      if (teacher) {
+        isUnavailable = !teacher.available_days.includes(dayIndex);
+      }
       if (isUnavailable) return;
       
-      // 💡 移動先がすでに埋まっている場合は何もしない
       if (timetable[dayIndex]?.[period]) return;
-
       executeAssignment(draggedSubject, dayIndex, period, fromDay, fromPeriod);
     } catch (err) {
       console.error('ドロップデータの解析に失敗しました:', err);
@@ -150,6 +212,54 @@ function App() {
   };
 
   const filteredSubjects = subjects.filter((s) => s.target_class === currentClass);
+
+  const saveTeacherRule = (teacherId: string, updatedDays: number[], maxPeriods: number) => {
+    fetch('/api/update-teacher', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: teacherId,
+        available_days: updatedDays,
+        max_periods_per_day: maxPeriods
+      })
+    })
+    .then(res => res.json())
+    .then(data => {
+      if (data.status === 'success') {
+        fetchAllData(); 
+        alert('ルールを更新しました！');
+      } else {
+        alert('エラーが発生しました。');
+      }
+    })
+    .catch(err => alert('通信エラーが発生しました。'));
+  };
+
+  const renderTeacherModal = () => {
+    if (!isTeacherModalOpen) return null;
+    return (
+      <div style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.5)', display: 'flex', justifyContent: 'center', alignItems: 'center', zIndex: 1000 }}>
+        <div style={{ backgroundColor: 'white', padding: '30px', borderRadius: '12px', width: '700px', maxHeight: '80vh', overflowY: 'auto', boxShadow: '0 10px 25px rgba(0,0,0,0.2)' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', borderBottom: '2px solid #f1f5f9', paddingBottom: '10px' }}>
+            <h2 style={{ margin: 0, color: '#1e293b' }}>⚙️ 個別ルール設定（教員マスタ）</h2>
+            <button onClick={() => setIsTeacherModalOpen(false)} style={{ background: 'none', border: 'none', fontSize: '20px', cursor: 'pointer', color: '#64748b' }}>✖</button>
+          </div>
+          
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '15px' }}>
+            {/* 💡 【修正】分離したコンポーネントをここで呼び出す */}
+            {teachers.map(teacher => (
+              <TeacherRuleItem 
+                key={teacher.id} 
+                teacher={teacher} 
+                daysList={days} 
+                onSave={saveTeacherRule} 
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   if (role === null) {
     return (
@@ -171,23 +281,26 @@ function App() {
   if (role === 'kyoka') {
     return (
       <div className="app-container">
+        {renderTeacherModal()}
         <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 20px', borderBottom: '2px solid #3498db' }}>
           <div>
             <h1 style={{ fontSize: '24px', margin: '15px 0' }}>🧪 教科主任専用ポータル</h1>
             <p style={{ margin: 0, color: '#64748b', fontSize: '14px' }}>担当クラスへの教員割り当てを行います。</p>
           </div>
-          <button onClick={() => setRole(null)} style={{ padding: '8px 16px', backgroundColor: '#94a3b8', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>
-            ログアウト
-          </button>
+          <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
+            <button onClick={() => setIsTeacherModalOpen(true)} style={{ padding: '8px 16px', backgroundColor: '#f59e0b', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>
+              ⚙️ 教員ルール設定
+            </button>
+            <button onClick={() => setRole(null)} style={{ padding: '8px 16px', backgroundColor: '#94a3b8', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>
+              ログアウト
+            </button>
+          </div>
         </header>
         <main style={{ padding: '30px 20px', textAlign: 'left', maxWidth: '800px', margin: '0 auto' }}>
           <div style={{ backgroundColor: '#fff', border: '1px solid #e2e8f0', padding: '24px', borderRadius: '12px', boxShadow: '0 4px 6px rgba(0,0,0,0.05)' }}>
             <h2 style={{ fontSize: '18px', marginBottom: '20px', color: '#1e293b', borderBottom: '2px solid #f1f5f9', paddingBottom: '10px' }}>
               📅 クラス別・担当教員の割り当て
             </h2>
-            <p style={{ fontSize: '14px', color: '#64748b', marginBottom: '25px' }}>
-              各クラスの科目に配置する担当教員を選択してください。「割り当てを確定する」を押すと、教務課の時間割作成画面にリアルタイムで反映されます。
-            </p>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px', backgroundColor: '#f8fafc', borderRadius: '8px' }}>
                 <div><span style={{ fontWeight: 'bold', backgroundColor: '#e2e8f0', padding: '2px 6px', borderRadius: '4px', fontSize: '12px', marginRight: '10px' }}>1A</span><span style={{ fontWeight: 'bold', color: '#334155' }}>数学I</span></div>
@@ -205,27 +318,17 @@ function App() {
                   <option value="T003">佐藤先生 (T003)</option>
                 </select>
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px', backgroundColor: '#f8fafc', borderRadius: '8px' }}>
-                <div><span style={{ fontWeight: 'bold', backgroundColor: '#e2e8f0', padding: '2px 6px', borderRadius: '4px', fontSize: '12px', marginRight: '10px' }}>1B</span><span style={{ fontWeight: 'bold', color: '#334155' }}>数学I</span></div>
-                <select id="assign-1b-math" defaultValue="T001" style={{ padding: '6px 12px', borderRadius: '6px', border: '1px solid #cbd5e1', fontWeight: 'bold' }}>
-                  <option value="T001">山田先生 (T001)</option>
-                  <option value="T002">ジョン先生 (T002)</option>
-                  <option value="T003">佐藤先生 (T003)</option>
-                </select>
-              </div>
             </div>
             <button 
               onClick={() => {
                 const aMath = (document.getElementById('assign-1a-math') as HTMLSelectElement).value;
                 const aEng = (document.getElementById('assign-1a-eng') as HTMLSelectElement).value;
-                const bMath = (document.getElementById('assign-1b-math') as HTMLSelectElement).value;
                 const payload = [
                   { subject_id: "S001", instructor_id: aMath },
                   { subject_id: "S002", instructor_id: aEng },
-                  { subject_id: "S004", instructor_id: bMath },
                 ];
                 fetch('/api/assign-teachers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-                .then(res => res.json()).then(data => alert(data.message)).catch(_err => alert('割り当ての更新に失敗しました。'));
+                .then(res => res.json()).then(data => alert(data.message)).catch(_err => alert('更新に失敗しました。'));
               }}
               style={{ marginTop: '30px', width: '100%', padding: '12px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: '6px', fontSize: '16px', fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}
             >
@@ -239,6 +342,7 @@ function App() {
 
   return (
     <div className="app-container">
+      {renderTeacherModal()}
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 20px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
           <h1>時間割原案作成エディタ</h1>
@@ -251,7 +355,9 @@ function App() {
           </div>
         </div>
         <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
-          {/* 💡 【復旧】自動配置ボタン */}
+          <button onClick={() => setIsTeacherModalOpen(true)} style={{ padding: '10px 15px', backgroundColor: '#f59e0b', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '16px', fontWeight: 'bold' }}>
+            ⚙️ 教員ルール設定
+          </button>
           <button 
             onClick={() => {
               if (window.confirm(`${currentClass}クラスの未配置の授業を自動で割り当てます。よろしいですか？`)) {
@@ -278,7 +384,6 @@ function App() {
       </header>
       <main className="main-content">
         <section className="timetable-section">
-          {/* 💡 【復旧】テーブル全体での onDragEnd 検知 */}
           <table className="timetable-table" onDragEnd={handleDragEnd}>
             <thead>
               <tr>
@@ -292,9 +397,17 @@ function App() {
                   <th>{period}限</th>
                   {days.map((_day, dayIndex) => {
                     const subjectTitle = timetable[dayIndex]?.[period];
-                    // 💡 【復旧】ドラッグ中のハイライト判定
+                    
                     const activeSubject = draggingSubject || selectedSubject;
-                    const isInstructorUnavailable = activeSubject?.instructor_id === 'T002' && dayIndex !== 1 && dayIndex !== 3;
+                    let isInstructorUnavailable = false;
+                    
+                    if (activeSubject) {
+                      const teacher = teachers.find(t => t.id === activeSubject.instructor_id);
+                      if (teacher) {
+                        isInstructorUnavailable = !teacher.available_days.includes(dayIndex);
+                      }
+                    }
+                    
                     const isDropDisabled = draggingSubject && (subjectTitle !== null || isInstructorUnavailable);
 
                     return (
@@ -358,14 +471,7 @@ function App() {
             </tbody>
           </table>
         </section>
-        <Sidebar
-          currentClass={currentClass}
-          filteredSubjects={filteredSubjects}
-          selectedSubject={selectedSubject}
-          onSubjectSelect={setSelectedSubject}
-          onDragStart={handleDragStart}
-          workload={workload} 
-        />
+        <Sidebar currentClass={currentClass} filteredSubjects={filteredSubjects} selectedSubject={selectedSubject} onSubjectSelect={setSelectedSubject} onDragStart={handleDragStart} workload={workload} />
       </main>
     </div>
   );
