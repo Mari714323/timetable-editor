@@ -266,3 +266,33 @@ def export_csv(target_class: str = "1A"):
         media_type="text/csv", 
         headers=headers
     )
+
+# （backend/main.py の一番下に追記）
+
+# 5. 教員の稼働コマ数集計API
+@app.get("/api/workload")
+def get_workload():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    # 💡 SQLの力で、全クラス・全曜日の「科目ごとの配置数」を一発で集計（GROUP BY）
+    cursor.execute("""
+        SELECT subject_title, COUNT(*) as count
+        FROM timetable
+        WHERE subject_title IS NOT NULL
+        GROUP BY subject_title
+    """)
+    rows = cursor.fetchall()
+    conn.close()
+    
+    # 取得した科目ごとの集計結果を、MOCK_SUBJECTSと突合して「担当教員ごと」に変換・合算する
+    workload = {}
+    for title, count in rows:
+        for subj in MOCK_SUBJECTS:
+            if subj["title"] == title:
+                teacher = subj["instructor_id"]
+                # 既存のカウントに加算していく
+                workload[teacher] = workload.get(teacher, 0) + count
+                break
+                
+    return workload

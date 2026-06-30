@@ -2,23 +2,23 @@
 import React from 'react';
 import type { Subject } from '../types';
 
-// 1. 親（App.tsx）から受け取る引数（Props）の型を定義します
+// 1. 親から受け取る引数に、集計データ（workload）を追加
 interface SidebarProps {
   currentClass: string;
   filteredSubjects: Subject[];
   selectedSubject: Subject | null;
   onSubjectSelect: (subject: Subject) => void;
   onDragStart: (e: React.DragEvent, subject: Subject) => void;
+  workload: { [key: string]: number }; // 📊 新規追加：教員ごとのコマ数
 }
 
-// 2. コンポーネント本体
-// 親から渡されたデータを受け取って、HTML（JSX）を組み立てて返します
 export const Sidebar: React.FC<SidebarProps> = ({
   currentClass,
   filteredSubjects,
   selectedSubject,
   onSubjectSelect,
   onDragStart,
+  workload,
 }) => {
   return (
     <section className="sidebar-section">
@@ -51,6 +51,29 @@ export const Sidebar: React.FC<SidebarProps> = ({
             </div>
           );
         })}
+      </div>
+
+      {/* 📊 【新規追加】教員の稼働コマ数ダッシュボード */}
+      <div style={{ marginTop: '30px', backgroundColor: '#e2e8f0', padding: '16px', borderRadius: '8px' }}>
+        <h3 style={{ marginTop: 0, fontSize: '16px', color: '#334155', borderBottom: '1px solid #cbd5e1', paddingBottom: '8px' }}>
+          📊 教員の稼働状況 (全クラス)
+        </h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginTop: '12px' }}>
+          {Object.entries(workload).length === 0 ? (
+            <div style={{ fontSize: '13px', color: '#64748b' }}>配置済みの授業はありません</div>
+          ) : (
+            Object.entries(workload).map(([teacher, count]) => (
+              <div key={teacher} style={{ display: 'flex', justifyContent: 'space-between', backgroundColor: '#fff', padding: '8px 12px', borderRadius: '4px', boxShadow: '0 1px 2px rgba(0,0,0,0.05)' }}>
+                <span style={{ fontWeight: 'bold', color: '#475569' }}>{teacher}</span>
+                {/* 5コマ以上なら赤色で警告表示にする小技 */}
+                <span style={{ fontWeight: 'bold', color: count >= 5 ? '#e74c3c' : '#2ecc71' }}>{count} コマ</span>
+              </div>
+            ))
+          )}
+        </div>
+        <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '12px', textAlign: 'right' }}>
+          ※「変更を保存する」と最新化されます
+        </div>
       </div>
     </section>
   );
