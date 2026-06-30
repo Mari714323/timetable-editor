@@ -168,6 +168,25 @@ function App() {
         </div>
 
         <div style={{ display: 'flex', gap: '10px' }}>
+          {/* 🤖 【新規追加】自動配置ボタン */}
+          <button 
+            onClick={() => {
+              if (window.confirm(`${currentClass}クラスの未配置の授業を自動で割り当てます。よろしいですか？`)) {
+                fetch(`/api/auto-assign?target_class=${currentClass}`, { method: 'POST' })
+                  .then(res => res.json())
+                  .then(data => {
+                    alert(data.message);
+                    // 成功したら画面をリロードして最新のDB状態を反映させる
+                    window.location.reload();
+                  })
+                  .catch(err => alert('自動配置に失敗しました。'));
+              }
+            }}
+            style={{ padding: '10px 20px', backgroundColor: '#9b59b6', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '16px', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}
+          >
+            ✨ 自動配置
+          </button>
+
           <button 
             onClick={() => window.location.href = `/api/export-csv?target_class=${currentClass}`} 
             style={{ padding: '10px 20px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '16px', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}
@@ -175,7 +194,7 @@ function App() {
             CSVをダウンロード
           </button>
           <button 
-            onClick={handleSave} 
+            onClick={handleSave}
             style={{ padding: '10px 20px', backgroundColor: '#2ecc71', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '16px', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}
           >
             変更を保存する
