@@ -296,3 +296,115 @@ def get_workload():
                 break
                 
     return workload
+
+# 6. 自動配置API（簡易AIロジック）
+@app.post("/api/auto-assign")
+def auto_assign(target_class: str = "1A"):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    # ① 対象クラスの現在の時間割を取得
+    cursor.execute("""
+        SELECT day_idx, period, subject_title 
+        FROM timetable 
+        WHERE target_class = ?
+    """, (target_class,))
+    current_timetable_rows = cursor.fetchall()
+    
+    # 既に配置されている授業のタイトルリストを作成
+    assigned_titles = [row[2] for row in current_timetable_rows if row[2] is not None]
+    
+    # ② まだ配置されていない（余っている）授業をリストアップ
+    unassigned_subjects = [
+        s for s in MOCK_SUBJECTS 
+        if s["target_class"] == target_class and s["title"] not in assigned_titles
+    ]
+    
+    if not unassigned_subjects:
+        conn.close()
+        return {"status": "success", "message": "配置待ちの授業はありませんでした。"}
+
+    # ③ 他クラスの配置状況（ダブルブッキングチェック用）を取得
+    cursor.execute("""
+        SELECT day_idx, period, subject_title
+        FROM timetable
+        WHERE target_class != ? AND subject_title IS NOT NULL
+    """, (target_class,))
+    other_classes_rows = cursor.fetchall()
+    
+    # 他クラスの状況を扱いやすいように辞書化 {(day, period): [teacher_id, ...]}
+    other_class_teachers = {}
+    for day, period, title in other_classes_rows:
+        for subj in MOCK_SUBJECTS:
+            if subj["title"] == title:
+                key = (day, period)
+                if key not in other_class_teachers:
+                    other_class_teachers[key] = []
+                other_class_teachers[key].append(subj["instructor_id"])
+                break
+
+    # 現在のクラスの時間割を2次元配列化（0:月〜4:金, 1限〜7限）
+    timetable_matrix = {d: {p: None for p in range(1, 8)} for d in range(5)}
+    for day, period, title in current_timetable_rows:
+        timetable_matrix[day][period] = title
+
+    # ④ 配置ロジック（空いている枠を順番に探して、制約をクリアしたら配置）
+    assigned_count = 0
+    for subject in unassigned_subjects:
+        teacher_id = subject["instructor_id"]
+        placed = False
+        
+        for day in range(5):
+            if placed: break
+            
+            # 制約1: ジョン先生（T002）は火（1）と木（3）のみ
+            if teacher_id == "T002" and day not in [1, 3]:
+                continue
+                
+            # その日の担当教員の既存コマ数をカウント
+            current_day_count = sum(
+                1 for p in range(1, 8) 
+                if timetable_matrix[day][p] is not None and 
+                next((s["instructor_id"] for s in MOCK_SUBJECTS if s["title"] == timetable_matrix[day][p]), "") == teacher_id
+            )
+            
+            # 制約2: 1日4コマ上限
+            if current_day_count >= 4:
+                continue
+                
+            for period in range(1, 8):
+                if timetable_matrix[day][period] is not None:
+                    continue # 既に埋まっている
+                    
+                # 制約3: ダブルブッキングチェック（他クラスで同じ先生が授業していないか）
+                if teacher_id in other_class_teachers.get((day, period), []):
+                    continue
+                    
+                # 制約4: 3連コマ防止（簡易チェック：前後合わせて連続するかどうかなど）
+                # ※ここではシンプル化のため、単純に前後のコマの担当者をチェックします
+                prev_teacher = next((s["instructor_id"] for s in MOCK_SUBJECTS if s["title"] == timetable_matrix[day].get(period - 1)), "") if period > 1 else ""
+                next_teacher = next((s["instructor_id"] for s in MOCK_SUBJECTS if s["title"] == timetable_matrix[day].get(period + 1)), "") if period < 7 else ""
+                if prev_teacher == teacher_id and next_teacher == teacher_id:
+                    continue # 挟まれると3連になるので回避
+                
+                # 全ての制約をクリア！仮配置する
+                timetable_matrix[day][period] = subject["title"]
+                
+                # DBにもUPDATEをかける準備
+                cursor.execute("""
+                    UPDATE timetable
+                    SET subject_title = ?
+                    WHERE target_class = ? AND day_idx = ? AND period = ?
+                """, (subject["title"], target_class, day, period))
+                
+                placed = True
+                assigned_count += 1
+                break
+                
+    conn.commit()
+    conn.close()
+    
+    return {
+        "status": "success", 
+        "message": f"未配置の授業のうち、{assigned_count}件を自動配置しました！"
+    }
