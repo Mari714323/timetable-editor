@@ -58,7 +58,7 @@ def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     
-    # 🔑 target_class を含めた3つの複合主キー（PK）に変更
+    # 既存の時間割テーブル
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS timetable (
             target_class TEXT,
@@ -69,23 +69,33 @@ def init_db():
         )
     """)
     
-    # クラスごとに初期枠がなければインサート（今回は1Aと1B）
-    cursor.execute("SELECT COUNT(*) FROM timetable")
-    if cursor.fetchone()[0] == 0:
-        for target_class in ["1A", "1B"]:
-            for day in range(5):
-                for prd in range(1, 8):
-                    cursor.execute(
-                        "INSERT INTO timetable (target_class, day_idx, period, subject_title) VALUES (?, ?, ?, NULL)",
-                        (target_class, day, prd)
-                    )
+    # 💡 【新規追加】科目＆担当教員管理テーブル
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS subjects (
+            id TEXT PRIMARY KEY,
+            title TEXT,
+            target_class TEXT,
+            credits INTEGER,
+            instructor_id TEXT,
+            color TEXT
+        )
+    """)
     
-    conn.commit()
+    # 初期データが空なら、MOCK_SUBJECTS の内容をDBに投入する
+    cursor.execute("SELECT COUNT(*) FROM subjects")
+    if cursor.fetchone()[0] == 0:
+        # 元々定義されている MOCK_SUBJECTS リストから投入
+        for s in MOCK_SUBJECTS:
+            cursor.execute("""
+                INSERT INTO subjects (id, title, target_class, credits, instructor_id, color)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (s["id"], s["title"], s["target_class"], s["credits"], s["instructor_id"], s["color"]))
+        conn.commit()
+        
     conn.close()
 
-# サーバー起動時に新しいスキーマでDBを初期化
-init_db()
-
+# アプリ起動時に初期化を走らせる
+init_db() 
 
 # --- 🔄 データ変換ヘルパー関数（クラス指定版） ---
 def load_timetable_from_db(target_class: str) -> dict:
@@ -133,11 +143,27 @@ class SaveTimetableRequest(BaseModel):
 # 1. 初期データ取得API（クエリパラメータでクラスを受け取るよう拡張）
 # 例: /api/init?target_class=1A
 @app.get("/api/init")
-def init_data(target_class: str = "1A"):
-    # 指定されたクラスの時間割データを取得
-    timetable = load_timetable_from_db(target_class)
-    # 授業マスタは全クラス分をそのまま返して、フロント側でフィルタリングさせます
-    return {"subjects": MOCK_SUBJECTS, "timetable": timetable}
+def init_timetable(target_class: str = "1A"):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    # 💡 メモリではなく、DBの subjects テーブルから該当クラスの科目を引く
+    cursor.execute("SELECT id, title, target_class, credits, instructor_id, color FROM subjects WHERE target_class = ?", (target_class,))
+    subject_rows = cursor.fetchall()
+    subjects_list = [
+        {"id": r[0], "title": r[1], "target_class": r[2], "credits": r[3], "instructor_id": r[4], "color": r[5]}
+        for r in subject_rows
+    ]
+    
+    # 時間割データの取得（ここは既存のままでOK）
+    timetable = {str(d): {str(p): None for p in range(1, 8)} for d in range(5)}
+    cursor.execute("SELECT day_idx, period, subject_title FROM timetable WHERE target_class = ?", (target_class,))
+    rows = cursor.fetchall()
+    for day_idx, period, subject_title in rows:
+        timetable[str(day_idx)][str(period)] = subject_title
+        
+    conn.close()
+    return {"subjects": subjects_list, "timetable": timetable}
 
 
 # 2. 時間割の保存API（クラスを指定したUPDATE文に進化）
@@ -408,3 +434,28 @@ def auto_assign(target_class: str = "1A"):
         "status": "success", 
         "message": f"未配置の授業のうち、{assigned_count}件を自動配置しました！"
     }
+
+# 7. 担当教員一括更新API（教科主任用）
+class TeacherAssignmentInput(BaseModel):
+    subject_id: str
+    instructor_id: str
+
+@app.post("/api/assign-teachers")
+def assign_teachers(assignments: List[TeacherAssignmentInput]):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    
+    try:
+        for assign in assignments:
+            cursor.execute("""
+                UPDATE subjects
+                SET instructor_id = ?
+                WHERE id = ?
+            """, (assign.instructor_id, assign.subject_id))
+        conn.commit()
+        return {"status": "success", "message": "担当教員の割り当てを更新しました！"}
+    except Exception as e:
+        conn.rollback()
+        return {"status": "error", "message": f"更新に失敗しました: {str(e)}"}
+    finally:
+        conn.close()
