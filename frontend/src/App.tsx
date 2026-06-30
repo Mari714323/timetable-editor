@@ -7,16 +7,15 @@ function App() {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
   const [timetable, setTimetable] = useState<{ [key: string]: { [key: string]: string | null } }>({});
-  
-  // 📊 【新規追加】教員ごとの稼働コマ数を保持するState
   const [workload, setWorkload] = useState<{ [key: string]: number }>({});
-  
   const [currentClass, setCurrentClass] = useState<string>('1A');
+
+  // 💡 【新規追加】今まさにドラッグして宙に浮いている授業を記憶するState
+  const [draggingSubject, setDraggingSubject] = useState<Subject | null>(null);
 
   const days = ['月', '火', '水', '木', '金'];
   const periods = [1, 2, 3, 4, 5, 6, 7];
 
-  // 📊 【新規追加】バックエンドから集計データを取得する関数
   const fetchWorkload = () => {
     fetch('/api/workload')
       .then(res => res.json())
@@ -31,7 +30,7 @@ function App() {
         setSubjects(data.subjects);
         setTimetable(data.timetable);
         setSelectedSubject(null);
-        fetchWorkload(); // 💡 初期ロード時やクラス切り替え時に集計データも引っ張ってくる
+        fetchWorkload();
       })
       .catch((err) => console.error('データの取得に失敗しました:', err));
   }, [currentClass]);
@@ -91,7 +90,7 @@ function App() {
       .then((res) => res.json())
       .then((data) => {
         alert(data.message);
-        fetchWorkload(); // 💡 保存に成功したら、DBが更新されたはずなので集計を取り直す！
+        fetchWorkload();
       })
       .catch((err) => {
         console.error('保存通信に失敗しました:', err);
@@ -101,13 +100,22 @@ function App() {
 
   const handleDragStart = (e: React.DragEvent, subject: Subject) => {
     e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'sidebar', subject }));
+    // 💡 ドラッグ開始時に、どの授業を掴んでいるかをStateにセット
+    setDraggingSubject(subject);
   };
 
   const handleCellDragStart = (e: React.DragEvent, subjectTitle: string, dayIndex: number, period: number) => {
     const subject = subjects.find(s => s.title === subjectTitle && s.target_class === currentClass);
     if (subject) {
       e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'timetable', subject, fromDay: dayIndex, fromPeriod: period }));
+      // 💡 配置済みセルからのドラッグ開始時もセット
+      setDraggingSubject(subject);
     }
+  };
+
+  // 💡 【新規追加】ドラッグが終了した時（手を離した時）に状態をリセットする
+  const handleDragEnd = () => {
+    setDraggingSubject(null);
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -116,6 +124,8 @@ function App() {
 
   const handleDrop = (e: React.DragEvent, dayIndex: number, period: number) => {
     e.preventDefault();
+    setDraggingSubject(null); // ドロップした時もリセット
+
     const rawData = e.dataTransfer.getData('text/plain');
     if (!rawData) return;
     try {
@@ -126,6 +136,10 @@ function App() {
 
       const isUnavailable = draggedSubject.instructor_id === 'T002' && dayIndex !== 1 && dayIndex !== 3;
       if (isUnavailable) return;
+      
+      // 移動先がすでに埋まっている場合は何もしない
+      if (timetable[dayIndex]?.[period]) return;
+
       executeAssignment(draggedSubject, dayIndex, period, fromDay, fromPeriod);
     } catch (err) {
       console.error('ドロップデータの解析に失敗しました:', err);
@@ -171,7 +185,7 @@ function App() {
 
       <main className="main-content">
         <section className="timetable-section">
-          <table className="timetable-table">
+          <table className="timetable-table" onDragEnd={handleDragEnd}>
             <thead>
               <tr>
                 <th>時限</th>
@@ -184,20 +198,29 @@ function App() {
                   <th>{period}限</th>
                   {days.map((_day, dayIndex) => {
                     const subjectTitle = timetable[dayIndex]?.[period];
-                    const isUnavailable = selectedSubject?.instructor_id === 'T002' && dayIndex !== 1 && dayIndex !== 3;
+                    
+                    // 💡 【ハイライト判定】
+                    // クリック選択時、またはドラッグ中の授業情報を使って判定する
+                    const activeSubject = draggingSubject || selectedSubject;
+                    const isInstructorUnavailable = activeSubject?.instructor_id === 'T002' && dayIndex !== 1 && dayIndex !== 3;
+                    
+                    // 💡 ドラッグ中で、かつ既に授業が配置されているマスか、先生の出勤日でない場合は配置不可としてハイライト
+                    const isDropDisabled = draggingSubject && (subjectTitle !== null || isInstructorUnavailable);
 
                     return (
                       <td 
                         key={dayIndex}
                         onClick={() => {
-                          if (isUnavailable) return;
+                          if (isInstructorUnavailable) return;
                           handleCellClick(dayIndex, period);
                         }}
                         onDragOver={handleDragOver}
                         onDrop={(e) => handleDrop(e, dayIndex, period)}
                         style={{ 
-                          cursor: isUnavailable ? 'not-allowed' : 'pointer',
-                          backgroundColor: isUnavailable ? '#e2e8f0' : 'transparent',
+                          cursor: isInstructorUnavailable ? 'not-allowed' : 'pointer',
+                          // 💡 ドラッグ中かつ配置不可のマスはグレーアウトし、斜線の模様を入れる
+                          backgroundColor: isDropDisabled ? '#e2e8f0' : 'transparent',
+                          backgroundImage: isDropDisabled ? 'repeating-linear-gradient(45deg, transparent, transparent 10px, rgba(0,0,0,0.03) 10px, rgba(0,0,0,0.03) 20px)' : 'none',
                           transition: 'all 0.2s ease',
                           minWidth: '120px',
                           height: '60px',
@@ -211,9 +234,10 @@ function App() {
                               e.stopPropagation();
                               handleCellDragStart(e, subjectTitle, dayIndex, period);
                             }}
+                            onDragEnd={handleDragEnd}
                             style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 10px', height: '100%', cursor: 'grab' }}
                           >
-                            <span className="allocated-slot" style={{ fontWeight: 'bold', color: '#2c3e50' }}>
+                            <span className="allocated-slot" style={{ fontWeight: 'bold', color: '#2c3e50', opacity: isDropDisabled ? 0.5 : 1 }}>
                               {dayIndex === 4 && (period === 6 || period === 7) && (
                                 <span style={{ marginRight: '4px', cursor: 'help' }} title="金曜後半のコマです">⚠️</span>
                               )}
@@ -224,7 +248,7 @@ function App() {
                                 e.stopPropagation();
                                 handleClearCell(dayIndex, period);
                               }}
-                              style={{ background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontWeight: 'bold', marginLeft: '6px', padding: '0 4px', fontSize: '14px' }}
+                              style={{ background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontWeight: 'bold', marginLeft: '6px', padding: '0 4px', fontSize: '14px', opacity: isDropDisabled ? 0.5 : 1 }}
                               title="この授業を外す"
                             >
                               ×
@@ -232,8 +256,8 @@ function App() {
                           </div>
                         ) : (
                           <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-                            <span className="empty-slot" style={{ color: isUnavailable ? '#94a3b8' : '#bdc3c7' }}>
-                              {isUnavailable ? '休' : '-'}
+                            <span className="empty-slot" style={{ color: isInstructorUnavailable ? '#94a3b8' : '#bdc3c7' }}>
+                              {isInstructorUnavailable ? '休' : '-'}
                             </span>
                           </div>
                         )}
@@ -246,13 +270,13 @@ function App() {
           </table>
         </section>
 
-        {/* 📊 親で取得した稼働状況（workload）をSidebarに渡す */}
         <Sidebar
           currentClass={currentClass}
           filteredSubjects={filteredSubjects}
           selectedSubject={selectedSubject}
           onSubjectSelect={setSelectedSubject}
           onDragStart={handleDragStart}
+          // サイドバーからのドラッグ終了時もリセットを保証する
           workload={workload} 
         />
       </main>
