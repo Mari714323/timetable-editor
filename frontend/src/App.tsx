@@ -8,10 +8,21 @@ function App() {
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
   const [timetable, setTimetable] = useState<{ [key: string]: { [key: string]: string | null } }>({});
   
+  // 📊 【新規追加】教員ごとの稼働コマ数を保持するState
+  const [workload, setWorkload] = useState<{ [key: string]: number }>({});
+  
   const [currentClass, setCurrentClass] = useState<string>('1A');
 
   const days = ['月', '火', '水', '木', '金'];
   const periods = [1, 2, 3, 4, 5, 6, 7];
+
+  // 📊 【新規追加】バックエンドから集計データを取得する関数
+  const fetchWorkload = () => {
+    fetch('/api/workload')
+      .then(res => res.json())
+      .then(data => setWorkload(data))
+      .catch(err => console.error('稼働状況の取得に失敗しました:', err));
+  };
 
   useEffect(() => {
     fetch(`/api/init?target_class=${currentClass}`)
@@ -20,15 +31,14 @@ function App() {
         setSubjects(data.subjects);
         setTimetable(data.timetable);
         setSelectedSubject(null);
+        fetchWorkload(); // 💡 初期ロード時やクラス切り替え時に集計データも引っ張ってくる
       })
       .catch((err) => console.error('データの取得に失敗しました:', err));
   }, [currentClass]);
 
-  // 🔄 【修正】移動元の曜日と時限（fromDay, fromPeriod）も受け取れるように拡張
   const executeAssignment = (subject: Subject, dayIndex: number, period: number, fromDay?: number, fromPeriod?: number) => {
     const currentDayAssignments = periods.map((p) => timetable[dayIndex]?.[p] || null);
 
-    // 💡【重要】同じ曜日の中で移動させる場合、「移動元のコマ」は空くことになるので、バリデーション前に一時的に空として扱う
     if (fromDay !== undefined && fromPeriod !== undefined && fromDay === dayIndex) {
       currentDayAssignments[fromPeriod - 1] = null;
     }
@@ -47,36 +57,20 @@ function App() {
       .then((res) => res.json())
       .then((data) => {
         if (data.is_valid) {
-          if (data.warning_message) {
-            alert(data.warning_message);
-          }
-
+          if (data.warning_message) alert(data.warning_message);
           setTimetable((prev) => {
             const newTimetable = { ...prev };
-            
-            // 💡【重要】移動元のセルがあった場合は、その場所を「空（null）」に戻してあげる
             if (fromDay !== undefined && fromPeriod !== undefined) {
-              newTimetable[fromDay] = {
-                ...newTimetable[fromDay],
-                [fromPeriod]: null,
-              };
+              newTimetable[fromDay] = { ...newTimetable[fromDay], [fromPeriod]: null };
             }
-
-            // 新しいセルに授業を配置する
-            newTimetable[dayIndex] = {
-              ...newTimetable[dayIndex],
-              [period]: subject.title,
-            };
-            
+            newTimetable[dayIndex] = { ...newTimetable[dayIndex], [period]: subject.title };
             return newTimetable;
           });
         } else {
           alert(data.error_message);
         }
       })
-      .catch((err) => {
-        console.error('バリデーション通信に失敗しました:', err);
-      });
+      .catch((err) => console.error('バリデーション通信に失敗しました:', err));
   };
 
   const handleCellClick = (dayIndex: number, period: number) => {
@@ -85,27 +79,19 @@ function App() {
   };
 
   const handleClearCell = (dayIndex: number, period: number) => {
-    setTimetable((prev) => ({
-      ...prev,
-      [dayIndex]: {
-        ...prev[dayIndex],
-        [period]: null,
-      },
-    }));
+    setTimetable((prev) => ({ ...prev, [dayIndex]: { ...prev[dayIndex], [period]: null } }));
   };
 
   const handleSave = () => {
     fetch('/api/save', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ 
-        target_class: currentClass,
-        timetable 
-      }),
+      body: JSON.stringify({ target_class: currentClass, timetable }),
     })
       .then((res) => res.json())
       .then((data) => {
         alert(data.message);
+        fetchWorkload(); // 💡 保存に成功したら、DBが更新されたはずなので集計を取り直す！
       })
       .catch((err) => {
         console.error('保存通信に失敗しました:', err);
@@ -113,22 +99,14 @@ function App() {
       });
   };
 
-  // 🔄 【修正】サイドバーからのドラッグ（sourceに 'sidebar' を記録）
   const handleDragStart = (e: React.DragEvent, subject: Subject) => {
     e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'sidebar', subject }));
   };
 
-  // 🏫 【新規】配置済みマス目からのドラッグ（sourceに 'timetable' と、移動元の情報を記録）
   const handleCellDragStart = (e: React.DragEvent, subjectTitle: string, dayIndex: number, period: number) => {
-    // 授業名からSubjectオブジェクトを探し出す
     const subject = subjects.find(s => s.title === subjectTitle && s.target_class === currentClass);
     if (subject) {
-      e.dataTransfer.setData('text/plain', JSON.stringify({ 
-        source: 'timetable', 
-        subject, 
-        fromDay: dayIndex, 
-        fromPeriod: period 
-      }));
+      e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'timetable', subject, fromDay: dayIndex, fromPeriod: period }));
     }
   };
 
@@ -136,33 +114,18 @@ function App() {
     e.preventDefault();
   };
 
-  // 🔄 【修正】ドロップ時に「どこから来たか」を解析して処理を分ける
   const handleDrop = (e: React.DragEvent, dayIndex: number, period: number) => {
     e.preventDefault();
     const rawData = e.dataTransfer.getData('text/plain');
     if (!rawData) return;
-
     try {
       const parsedData = JSON.parse(rawData);
-      let draggedSubject: Subject;
-      let fromDay: number | undefined;
-      let fromPeriod: number | undefined;
-
-      // 解析してデータを振り分ける
-      if (parsedData.source) {
-        draggedSubject = parsedData.subject;
-        if (parsedData.source === 'timetable') {
-          fromDay = parsedData.fromDay;
-          fromPeriod = parsedData.fromPeriod;
-        }
-      } else {
-        // 万が一古いデータが残っていた時のためのフォールバック
-        draggedSubject = parsedData;
-      }
+      let draggedSubject: Subject = parsedData.source ? parsedData.subject : parsedData;
+      let fromDay = parsedData.source === 'timetable' ? parsedData.fromDay : undefined;
+      let fromPeriod = parsedData.source === 'timetable' ? parsedData.fromPeriod : undefined;
 
       const isUnavailable = draggedSubject.instructor_id === 'T002' && dayIndex !== 1 && dayIndex !== 3;
       if (isUnavailable) return;
-
       executeAssignment(draggedSubject, dayIndex, period, fromDay, fromPeriod);
     } catch (err) {
       console.error('ドロップデータの解析に失敗しました:', err);
@@ -238,15 +201,14 @@ function App() {
                           transition: 'all 0.2s ease',
                           minWidth: '120px',
                           height: '60px',
-                          padding: '0' // セル全体の余白を消して内側のdivに委ねる
+                          padding: '0'
                         }}
                       >
                         {subjectTitle ? (
-                          // 🔄 【修正】配置済みの授業もドラッグできるように div で囲む
                           <div
                             draggable={true}
                             onDragStart={(e) => {
-                              e.stopPropagation(); // セルのクリック処理が発動しないようにガード
+                              e.stopPropagation();
                               handleCellDragStart(e, subjectTitle, dayIndex, period);
                             }}
                             style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 10px', height: '100%', cursor: 'grab' }}
@@ -284,12 +246,14 @@ function App() {
           </table>
         </section>
 
+        {/* 📊 親で取得した稼働状況（workload）をSidebarに渡す */}
         <Sidebar
           currentClass={currentClass}
           filteredSubjects={filteredSubjects}
           selectedSubject={selectedSubject}
           onSubjectSelect={setSelectedSubject}
           onDragStart={handleDragStart}
+          workload={workload} 
         />
       </main>
     </div>
