@@ -1,36 +1,37 @@
 import React, { useEffect, useState } from 'react';
 import './App.css';
-import type { Subject } from './types'; // 💡 新しく作った型ファイルを読み込む
-import { Sidebar } from './components/Sidebar'; // 💡 新しく作ったサイドバーを読み込む
+import type { Subject } from './types';
+import { Sidebar } from './components/Sidebar';
 
 function App() {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
   const [timetable, setTimetable] = useState<{ [key: string]: { [key: string]: string | null } }>({});
   
-  // 🏫 【新規追加】現在選択中のクラスを管理するState（初期値は '1A'）
   const [currentClass, setCurrentClass] = useState<string>('1A');
 
   const days = ['月', '火', '水', '木', '金'];
   const periods = [1, 2, 3, 4, 5, 6, 7];
 
-  // 🔄 【修正】初期データ取得を、選択中のクラスが変わるたびに再実行するように変更
-  // 依存配列（第二引数）に currentClass を入れることで、クラス切り替え時に自動でAPIが走ります
   useEffect(() => {
     fetch(`/api/init?target_class=${currentClass}`)
       .then((res) => res.json())
       .then((data) => {
         setSubjects(data.subjects);
         setTimetable(data.timetable);
-        // クラスが切り替わったら、選択中の授業カードを一度クリアして誤配置を防ぐ
         setSelectedSubject(null);
       })
       .catch((err) => console.error('データの取得に失敗しました:', err));
   }, [currentClass]);
 
-  // 共通の配置ロジック
-  const executeAssignment = (subject: Subject, dayIndex: number, period: number) => {
+  // 🔄 【修正】移動元の曜日と時限（fromDay, fromPeriod）も受け取れるように拡張
+  const executeAssignment = (subject: Subject, dayIndex: number, period: number, fromDay?: number, fromPeriod?: number) => {
     const currentDayAssignments = periods.map((p) => timetable[dayIndex]?.[p] || null);
+
+    // 💡【重要】同じ曜日の中で移動させる場合、「移動元のコマ」は空くことになるので、バリデーション前に一時的に空として扱う
+    if (fromDay !== undefined && fromPeriod !== undefined && fromDay === dayIndex) {
+      currentDayAssignments[fromPeriod - 1] = null;
+    }
 
     fetch('/api/validate-slot', {
       method: 'POST',
@@ -40,7 +41,7 @@ function App() {
         day: dayIndex,
         period: period,
         current_day_assignments: currentDayAssignments,
-        target_class: currentClass, // バリデーションAPIにも現在のクラスを伝える
+        target_class: currentClass,
       }),
     })
       .then((res) => res.json())
@@ -50,13 +51,25 @@ function App() {
             alert(data.warning_message);
           }
 
-          setTimetable((prev) => ({
-            ...prev,
-            [dayIndex]: {
-              ...prev[dayIndex],
+          setTimetable((prev) => {
+            const newTimetable = { ...prev };
+            
+            // 💡【重要】移動元のセルがあった場合は、その場所を「空（null）」に戻してあげる
+            if (fromDay !== undefined && fromPeriod !== undefined) {
+              newTimetable[fromDay] = {
+                ...newTimetable[fromDay],
+                [fromPeriod]: null,
+              };
+            }
+
+            // 新しいセルに授業を配置する
+            newTimetable[dayIndex] = {
+              ...newTimetable[dayIndex],
               [period]: subject.title,
-            },
-          }));
+            };
+            
+            return newTimetable;
+          });
         } else {
           alert(data.error_message);
         }
@@ -81,13 +94,12 @@ function App() {
     }));
   };
 
-  // 🔄 【修正】保存時に「どのクラスの時間割か」をバックエンドに伝えるよう拡張
   const handleSave = () => {
     fetch('/api/save', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ 
-        target_class: currentClass, // クラス名を同梱
+        target_class: currentClass,
         timetable 
       }),
     })
@@ -101,31 +113,62 @@ function App() {
       });
   };
 
+  // 🔄 【修正】サイドバーからのドラッグ（sourceに 'sidebar' を記録）
   const handleDragStart = (e: React.DragEvent, subject: Subject) => {
-    e.dataTransfer.setData('text/plain', JSON.stringify(subject));
+    e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'sidebar', subject }));
+  };
+
+  // 🏫 【新規】配置済みマス目からのドラッグ（sourceに 'timetable' と、移動元の情報を記録）
+  const handleCellDragStart = (e: React.DragEvent, subjectTitle: string, dayIndex: number, period: number) => {
+    // 授業名からSubjectオブジェクトを探し出す
+    const subject = subjects.find(s => s.title === subjectTitle && s.target_class === currentClass);
+    if (subject) {
+      e.dataTransfer.setData('text/plain', JSON.stringify({ 
+        source: 'timetable', 
+        subject, 
+        fromDay: dayIndex, 
+        fromPeriod: period 
+      }));
+    }
   };
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
   };
 
+  // 🔄 【修正】ドロップ時に「どこから来たか」を解析して処理を分ける
   const handleDrop = (e: React.DragEvent, dayIndex: number, period: number) => {
     e.preventDefault();
     const rawData = e.dataTransfer.getData('text/plain');
     if (!rawData) return;
 
     try {
-      const draggedSubject: Subject = JSON.parse(rawData);
+      const parsedData = JSON.parse(rawData);
+      let draggedSubject: Subject;
+      let fromDay: number | undefined;
+      let fromPeriod: number | undefined;
+
+      // 解析してデータを振り分ける
+      if (parsedData.source) {
+        draggedSubject = parsedData.subject;
+        if (parsedData.source === 'timetable') {
+          fromDay = parsedData.fromDay;
+          fromPeriod = parsedData.fromPeriod;
+        }
+      } else {
+        // 万が一古いデータが残っていた時のためのフォールバック
+        draggedSubject = parsedData;
+      }
+
       const isUnavailable = draggedSubject.instructor_id === 'T002' && dayIndex !== 1 && dayIndex !== 3;
       if (isUnavailable) return;
 
-      executeAssignment(draggedSubject, dayIndex, period);
+      executeAssignment(draggedSubject, dayIndex, period, fromDay, fromPeriod);
     } catch (err) {
       console.error('ドロップデータの解析に失敗しました:', err);
     }
   };
 
-  // 💡 【新規追加】右側のサイドバーに表示する授業を、現在選択中のクラスの物だけにフィルターする
   const filteredSubjects = subjects.filter((s) => s.target_class === currentClass);
 
   return (
@@ -133,8 +176,6 @@ function App() {
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 20px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '20px' }}>
           <h1>時間割原案作成エディタ</h1>
-          
-          {/* 🏫 【新規追加】クラス選択用のドロップダウンメニュー */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: '#f1f5f9', padding: '6px 12px', borderRadius: '6px', border: '1px solid #cbd5e1' }}>
             <label htmlFor="class-select" style={{ fontWeight: 'bold', color: '#475569', fontSize: '14px' }}>対象クラス:</label>
             <select
@@ -149,10 +190,8 @@ function App() {
           </div>
         </div>
 
-        {/* ボタンを横に並べるためにdivで囲みます */}
         <div style={{ display: 'flex', gap: '10px' }}>
           <button 
-            // 💡 クリック時にCSV出力APIへ直接アクセスする
             onClick={() => window.location.href = `/api/export-csv?target_class=${currentClass}`} 
             style={{ padding: '10px 20px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '16px', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}
           >
@@ -198,11 +237,20 @@ function App() {
                           backgroundColor: isUnavailable ? '#e2e8f0' : 'transparent',
                           transition: 'all 0.2s ease',
                           minWidth: '120px',
-                          height: '60px'
+                          height: '60px',
+                          padding: '0' // セル全体の余白を消して内側のdivに委ねる
                         }}
                       >
                         {subjectTitle ? (
-                          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 4px' }}>
+                          // 🔄 【修正】配置済みの授業もドラッグできるように div で囲む
+                          <div
+                            draggable={true}
+                            onDragStart={(e) => {
+                              e.stopPropagation(); // セルのクリック処理が発動しないようにガード
+                              handleCellDragStart(e, subjectTitle, dayIndex, period);
+                            }}
+                            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 10px', height: '100%', cursor: 'grab' }}
+                          >
                             <span className="allocated-slot" style={{ fontWeight: 'bold', color: '#2c3e50' }}>
                               {dayIndex === 4 && (period === 6 || period === 7) && (
                                 <span style={{ marginRight: '4px', cursor: 'help' }} title="金曜後半のコマです">⚠️</span>
@@ -221,9 +269,11 @@ function App() {
                             </button>
                           </div>
                         ) : (
-                          <span className="empty-slot" style={{ color: isUnavailable ? '#94a3b8' : '#bdc3c7' }}>
-                            {isUnavailable ? '休' : '-'}
-                          </span>
+                          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
+                            <span className="empty-slot" style={{ color: isUnavailable ? '#94a3b8' : '#bdc3c7' }}>
+                              {isUnavailable ? '休' : '-'}
+                            </span>
+                          </div>
                         )}
                       </td>
                     );
@@ -234,7 +284,6 @@ function App() {
           </table>
         </section>
 
-        {/* 💡 切り出したコンポーネントに、Props（引数）を渡して呼び出すだけ！ */}
         <Sidebar
           currentClass={currentClass}
           filteredSubjects={filteredSubjects}
@@ -246,4 +295,5 @@ function App() {
     </div>
   );
 }
+
 export default App;
