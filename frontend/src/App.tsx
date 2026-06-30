@@ -4,14 +4,15 @@ import type { Subject } from './types';
 import { Sidebar } from './components/Sidebar';
 
 function App() {
+  // 🔐 【新規追加】ログイン中のロールを管理するState
+  // null = 未ログイン（ログイン画面）, 'kyomu' = 教務課, 'kyoka' = 教科主任
+  const [role, setRole] = useState<'kyomu' | 'kyoka' | null>(null);
+
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
   const [timetable, setTimetable] = useState<{ [key: string]: { [key: string]: string | null } }>({});
   const [workload, setWorkload] = useState<{ [key: string]: number }>({});
   const [currentClass, setCurrentClass] = useState<string>('1A');
-
-  // 💡 【新規追加】今まさにドラッグして宙に浮いている授業を記憶するState
-  const [draggingSubject, setDraggingSubject] = useState<Subject | null>(null);
 
   const days = ['月', '火', '水', '木', '金'];
   const periods = [1, 2, 3, 4, 5, 6, 7];
@@ -24,6 +25,9 @@ function App() {
   };
 
   useEffect(() => {
+    // 💡 教務課ロールでログインしている時だけデータを取得するようにガードをかける
+    if (role !== 'kyomu') return;
+
     fetch(`/api/init?target_class=${currentClass}`)
       .then((res) => res.json())
       .then((data) => {
@@ -33,7 +37,7 @@ function App() {
         fetchWorkload();
       })
       .catch((err) => console.error('データの取得に失敗しました:', err));
-  }, [currentClass]);
+  }, [currentClass, role]);
 
   const executeAssignment = (subject: Subject, dayIndex: number, period: number, fromDay?: number, fromPeriod?: number) => {
     const currentDayAssignments = periods.map((p) => timetable[dayIndex]?.[p] || null);
@@ -100,22 +104,6 @@ function App() {
 
   const handleDragStart = (e: React.DragEvent, subject: Subject) => {
     e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'sidebar', subject }));
-    // 💡 ドラッグ開始時に、どの授業を掴んでいるかをStateにセット
-    setDraggingSubject(subject);
-  };
-
-  const handleCellDragStart = (e: React.DragEvent, subjectTitle: string, dayIndex: number, period: number) => {
-    const subject = subjects.find(s => s.title === subjectTitle && s.target_class === currentClass);
-    if (subject) {
-      e.dataTransfer.setData('text/plain', JSON.stringify({ source: 'timetable', subject, fromDay: dayIndex, fromPeriod: period }));
-      // 💡 配置済みセルからのドラッグ開始時もセット
-      setDraggingSubject(subject);
-    }
-  };
-
-  // 💡 【新規追加】ドラッグが終了した時（手を離した時）に状態をリセットする
-  const handleDragEnd = () => {
-    setDraggingSubject(null);
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -124,8 +112,6 @@ function App() {
 
   const handleDrop = (e: React.DragEvent, dayIndex: number, period: number) => {
     e.preventDefault();
-    setDraggingSubject(null); // ドロップした時もリセット
-
     const rawData = e.dataTransfer.getData('text/plain');
     if (!rawData) return;
     try {
@@ -136,10 +122,6 @@ function App() {
 
       const isUnavailable = draggedSubject.instructor_id === 'T002' && dayIndex !== 1 && dayIndex !== 3;
       if (isUnavailable) return;
-      
-      // 移動先がすでに埋まっている場合は何もしない
-      if (timetable[dayIndex]?.[period]) return;
-
       executeAssignment(draggedSubject, dayIndex, period, fromDay, fromPeriod);
     } catch (err) {
       console.error('ドロップデータの解析に失敗しました:', err);
@@ -148,6 +130,71 @@ function App() {
 
   const filteredSubjects = subjects.filter((s) => s.target_class === currentClass);
 
+  // -------------------------------------------------------------
+  // 画面のレンダリング条件分岐（ルーティング）
+  // -------------------------------------------------------------
+
+  // 🚪 パターン1: 未ログイン時の画面（役割選択画面）
+  if (role === null) {
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '80vh', fontFamily: 'Arial, sans-serif' }}>
+        <h1 style={{ fontSize: '32px', marginBottom: '10px' }}>スマート時間割管理システム</h1>
+        <p style={{ color: '#64748b', marginBottom: '40px' }}>ご利用の役割を選択してログインしてください。</p>
+        
+        <div style={{ display: 'flex', gap: '30px' }}>
+          {/* 教務課ボタン */}
+          <button 
+            onClick={() => setRole('kyomu')}
+            style={{ width: '220px', padding: '30px 20px', backgroundColor: '#2cc71', color: 'white', border: 'none', borderRadius: '12px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 4px 6px rgba(0,0,0,0.1)', transition: 'transform 0.2s' }}
+          >
+            🏫 教務課として<br/><span style={{ fontSize: '14px', fontWeight: 'normal', opacity: 0.9 }}>（時間割の一括作成・出力）</span>
+          </button>
+          
+          {/* 教科主任ボタン */}
+          <button 
+            onClick={() => setRole('kyoka')}
+            style={{ width: '220px', padding: '30px 20px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: '12px', fontSize: '18px', fontWeight: 'bold', cursor: 'pointer', boxShadow: '0 4px 6px rgba(0,0,0,0.1)', transition: 'transform 0.2s' }}
+          >
+            🧪 教科主任として<br/><span style={{ fontSize: '14px', fontWeight: 'normal', opacity: 0.9 }}>（担当教員の割当・要望入力）</span>
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // 📝 パターン2: 教科主任の画面（モック）
+  if (role === 'kyoka') {
+    return (
+      <div className="app-container">
+        <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 20px', borderBottom: '2px solid #3498db' }}>
+          <div>
+            <h1 style={{ fontSize: '24px', margin: '15px 0' }}>🧪 教科主任専用ポータル（理科）</h1>
+            <p style={{ margin: 0, color: '#64748b', fontSize: '14px' }}>担当クラスの割り当ておよび個別要望の入力を行います。</p>
+          </div>
+          <button 
+            onClick={() => setRole(null)} 
+            style={{ padding: '8px 16px', backgroundColor: '#94a3b8', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}
+          >
+            ログアウト
+          </button>
+        </header>
+        
+        <main style={{ padding: '40px 20px', textAlign: 'left' }}>
+          <div style={{ backgroundColor: '#f8fafc', border: '1px solid #e2e8f0', padding: '24px', borderRadius: '8px', maxWidth: '600px', margin: '0 auto' }}>
+            <h2 style={{ fontSize: '18px', marginBottom: '20px', color: '#1e293b' }}>📅 【理科】担当教員の一括割当（モック表示）</h2>
+            <p style={{ fontSize: '14px', color: '#475569', lineHeight: '1.6' }}>
+              ここに、ご提示いただいた「2年1,2,3組の生物基礎はA先生」「2年4,5組はB先生」といった、**クラスごとの担当教員を教務課へ一括送信する入力フォーム**を今後作成していきます！
+            </p>
+            <div style={{ marginTop: '20px', padding: '12px', backgroundColor: '#edf2f7', borderRadius: '6px', fontSize: '13px', color: '#4a5568' }}>
+              ℹ️ 現在、時間割パズル本体の操作権限は「教務課」のみに制限されています。
+            </div>
+          </div>
+        </main>
+      </div>
+    );
+  }
+
+  // 🏫 パターン3: 教務課の画面（これまでのフル機能エディタ）
   return (
     <div className="app-container">
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 20px' }}>
@@ -167,26 +214,7 @@ function App() {
           </div>
         </div>
 
-        <div style={{ display: 'flex', gap: '10px' }}>
-          {/* 🤖 【新規追加】自動配置ボタン */}
-          <button 
-            onClick={() => {
-              if (window.confirm(`${currentClass}クラスの未配置の授業を自動で割り当てます。よろしいですか？`)) {
-                fetch(`/api/auto-assign?target_class=${currentClass}`, { method: 'POST' })
-                  .then(res => res.json())
-                  .then(data => {
-                    alert(data.message);
-                    // 成功したら画面をリロードして最新のDB状態を反映させる
-                    window.location.reload();
-                  })
-                  .catch(err => alert('自動配置に失敗しました。'));
-              }
-            }}
-            style={{ padding: '10px 20px', backgroundColor: '#9b59b6', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '16px', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}
-          >
-            ✨ 自動配置
-          </button>
-
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center' }}>
           <button 
             onClick={() => window.location.href = `/api/export-csv?target_class=${currentClass}`} 
             style={{ padding: '10px 20px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '16px', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}
@@ -194,17 +222,25 @@ function App() {
             CSVをダウンロード
           </button>
           <button 
-            onClick={handleSave}
+            onClick={handleSave} 
             style={{ padding: '10px 20px', backgroundColor: '#2ecc71', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '16px', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}
           >
             変更を保存する
+          </button>
+          
+          {/* 🚪 ログアウトボタンを追加 */}
+          <button 
+            onClick={() => setRole(null)} 
+            style={{ padding: '10px 15px', backgroundColor: '#94a3b8', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontSize: '16px', fontWeight: 'bold' }}
+          >
+            ログアウト
           </button>
         </div>
       </header>
 
       <main className="main-content">
         <section className="timetable-section">
-          <table className="timetable-table" onDragEnd={handleDragEnd}>
+          <table className="timetable-table">
             <thead>
               <tr>
                 <th>時限</th>
@@ -217,29 +253,20 @@ function App() {
                   <th>{period}限</th>
                   {days.map((_day, dayIndex) => {
                     const subjectTitle = timetable[dayIndex]?.[period];
-                    
-                    // 💡 【ハイライト判定】
-                    // クリック選択時、またはドラッグ中の授業情報を使って判定する
-                    const activeSubject = draggingSubject || selectedSubject;
-                    const isInstructorUnavailable = activeSubject?.instructor_id === 'T002' && dayIndex !== 1 && dayIndex !== 3;
-                    
-                    // 💡 ドラッグ中で、かつ既に授業が配置されているマスか、先生の出勤日でない場合は配置不可としてハイライト
-                    const isDropDisabled = draggingSubject && (subjectTitle !== null || isInstructorUnavailable);
+                    const isUnavailable = selectedSubject?.instructor_id === 'T002' && dayIndex !== 1 && dayIndex !== 3;
 
                     return (
                       <td 
                         key={dayIndex}
                         onClick={() => {
-                          if (isInstructorUnavailable) return;
+                          if (isUnavailable) return;
                           handleCellClick(dayIndex, period);
                         }}
                         onDragOver={handleDragOver}
                         onDrop={(e) => handleDrop(e, dayIndex, period)}
                         style={{ 
-                          cursor: isInstructorUnavailable ? 'not-allowed' : 'pointer',
-                          // 💡 ドラッグ中かつ配置不可のマスはグレーアウトし、斜線の模様を入れる
-                          backgroundColor: isDropDisabled ? '#e2e8f0' : 'transparent',
-                          backgroundImage: isDropDisabled ? 'repeating-linear-gradient(45deg, transparent, transparent 10px, rgba(0,0,0,0.03) 10px, rgba(0,0,0,0.03) 20px)' : 'none',
+                          cursor: isUnavailable ? 'not-allowed' : 'pointer',
+                          backgroundColor: isUnavailable ? '#e2e8f0' : 'transparent',
                           transition: 'all 0.2s ease',
                           minWidth: '120px',
                           height: '60px',
@@ -248,15 +275,9 @@ function App() {
                       >
                         {subjectTitle ? (
                           <div
-                            draggable={true}
-                            onDragStart={(e) => {
-                              e.stopPropagation();
-                              handleCellDragStart(e, subjectTitle, dayIndex, period);
-                            }}
-                            onDragEnd={handleDragEnd}
-                            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 10px', height: '100%', cursor: 'grab' }}
+                            style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 10px', height: '100%' }}
                           >
-                            <span className="allocated-slot" style={{ fontWeight: 'bold', color: '#2c3e50', opacity: isDropDisabled ? 0.5 : 1 }}>
+                            <span className="allocated-slot" style={{ fontWeight: 'bold', color: '#2c3e50' }}>
                               {dayIndex === 4 && (period === 6 || period === 7) && (
                                 <span style={{ marginRight: '4px', cursor: 'help' }} title="金曜後半のコマです">⚠️</span>
                               )}
@@ -267,7 +288,7 @@ function App() {
                                 e.stopPropagation();
                                 handleClearCell(dayIndex, period);
                               }}
-                              style={{ background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontWeight: 'bold', marginLeft: '6px', padding: '0 4px', fontSize: '14px', opacity: isDropDisabled ? 0.5 : 1 }}
+                              style={{ background: 'none', border: 'none', color: '#e74c3c', cursor: 'pointer', fontWeight: 'bold', marginLeft: '6px', padding: '0 4px', fontSize: '14px' }}
                               title="この授業を外す"
                             >
                               ×
@@ -275,8 +296,8 @@ function App() {
                           </div>
                         ) : (
                           <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
-                            <span className="empty-slot" style={{ color: isInstructorUnavailable ? '#94a3b8' : '#bdc3c7' }}>
-                              {isInstructorUnavailable ? '休' : '-'}
+                            <span className="empty-slot" style={{ color: isUnavailable ? '#94a3b8' : '#bdc3c7' }}>
+                              {isUnavailable ? '休' : '-'}
                             </span>
                           </div>
                         )}
@@ -295,7 +316,6 @@ function App() {
           selectedSubject={selectedSubject}
           onSubjectSelect={setSelectedSubject}
           onDragStart={handleDragStart}
-          // サイドバーからのドラッグ終了時もリセットを保証する
           workload={workload} 
         />
       </main>
