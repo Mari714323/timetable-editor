@@ -8,6 +8,7 @@ interface SidebarProps {
   onSubjectSelect: (subject: Subject) => void;
   onDragStart: (e: React.DragEvent, subject: Subject) => void;
   workload: { [key: string]: number };
+  timetable: { [key: string]: { [key: string]: string | null } }; // 🌟追加
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -17,6 +18,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSubjectSelect,
   onDragStart,
   workload,
+  timetable, // 🌟追加
 }) => {
   return (
     <section className="sidebar-section">
@@ -24,6 +26,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="subjects-list" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
         {filteredSubjects.map((subject) => {
           const isSelected = selectedSubject?.id === subject.id;
+          
+          // 🌟追加：時間割の中から、この科目がすでに配置されている数をカウント
+          let assignedCount = 0;
+          Object.values(timetable).forEach(day => {
+            Object.values(day).forEach(subj => {
+              if (subj === subject.title) assignedCount++;
+            });
+          });
+
           return (
             <div
               key={subject.id}
@@ -43,8 +54,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <div style={{ fontWeight: 'bold', fontSize: '16px', marginBottom: '4px', color: '#1e293b' }}>
                 {subject.title}
               </div>
+              <div style={{ fontWeight: 'bold', fontSize: '16px', marginBottom: '4px', color: '#1e293b' }}>
+                {subject.title}
+              </div>
+              {/* 🌟追加：リアルタイムな分母・分子の表示に書き換え */}
               <div style={{ fontSize: '13px', color: '#64748b' }}>
-                クラス: {subject.target_class} | コマ数: {subject.credits} | 担当: {subject.instructor_id}
+                担当: {subject.instructor_id} | 配置: <span style={{ fontWeight: 'bold', color: assignedCount >= subject.credits ? '#2ecc71' : '#e74c3c'}}>{assignedCount} / {subject.credits}</span> コマ
               </div>
             </div>
           );

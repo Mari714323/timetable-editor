@@ -2,6 +2,7 @@ import sqlite3
 import os
 import csv 
 import io
+import uuid
 from fastapi import FastAPI
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -24,6 +25,14 @@ MOCK_TEACHERS = [
     {"id": "T003", "name": "佐藤先生", "available_days": "0,1,2,3,4", "max_periods_per_day": 4},
 ]
 
+# 💡 カリキュラムの初期データ
+MOCK_CURRICULUM = [
+    {"id": "C001", "track_name": "普通", "subject_name": "数学I", "hours_per_week": 4},
+    {"id": "C002", "track_name": "普通", "subject_name": "コミュ英語I", "hours_per_week": 3},
+    {"id": "C003", "track_name": "特進", "subject_name": "数学I", "hours_per_week": 5},
+    {"id": "C004", "track_name": "特進", "subject_name": "コミュ英語I", "hours_per_week": 4},
+]
+
 def init_db():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
@@ -44,6 +53,13 @@ def init_db():
         )
     """)
     
+    # 💡 【新規】カリキュラムテーブル作成
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS curriculum (
+            id TEXT PRIMARY KEY, track_name TEXT, subject_name TEXT, hours_per_week INTEGER
+        )
+    """)
+    
     cursor.execute("SELECT COUNT(*) FROM subjects")
     if cursor.fetchone()[0] == 0:
         for s in MOCK_SUBJECTS:
@@ -53,6 +69,11 @@ def init_db():
     if cursor.fetchone()[0] == 0:
         for t in MOCK_TEACHERS:
             cursor.execute("INSERT INTO teachers VALUES (?, ?, ?, ?)", (t["id"], t["name"], t["available_days"], t["max_periods_per_day"]))
+            
+    cursor.execute("SELECT COUNT(*) FROM curriculum")
+    if cursor.fetchone()[0] == 0:
+        for c in MOCK_CURRICULUM:
+            cursor.execute("INSERT INTO curriculum VALUES (?, ?, ?, ?)", (c["id"], c["track_name"], c["subject_name"], c["hours_per_week"]))
             
     conn.commit()
     conn.close()
@@ -85,18 +106,52 @@ class TeacherAssignmentInput(BaseModel):
     subject_id: str
     instructor_id: str
 
-# 💡 教員ルール更新用のデータモデル
 class TeacherUpdateInput(BaseModel):
     id: str
     available_days: List[int]
     max_periods_per_day: int
 
+# 💡 カリキュラム入力用スキーマ
+class CurriculumInput(BaseModel):
+    track_name: str
+    subject_name: str
+    hours_per_week: int
+
+# 💡 クラスと系統の紐付けマスタ（本来はDB管理ですが、今回はシンプルな定数で定義します）
+CLASS_TRACK_MAP = {
+    "1A": "普通",
+    "1B": "特進"
+}
+
 @app.get("/api/init")
 def init_timetable(target_class: str = "1A"):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("SELECT id, title, target_class, credits, instructor_id, color FROM subjects WHERE target_class = ?", (target_class,))
-    subjects_list = [{"id": r[0], "title": r[1], "target_class": r[2], "credits": r[3], "instructor_id": r[4], "color": r[5]} for r in cursor.fetchall()]
+    
+    # 💡 1. 対象クラスがどの系統（普通/特進など）かを取得
+    track_name = CLASS_TRACK_MAP.get(target_class, "普通")
+    
+    # 💡 2. カリキュラムテーブルから、この系統の「科目名」と「必要時間数」を取得
+    cursor.execute("SELECT subject_name, hours_per_week FROM curriculum WHERE track_name = ?", (track_name,))
+    curriculum_map = {row[0]: row[1] for row in cursor.fetchall()}
+    
+    # 💡 3. 【修正】カリキュラムテーブルを主軸にして配置待ちリストを作成する！
+    cursor.execute("SELECT title, instructor_id, color, id FROM subjects WHERE target_class = ?", (target_class,))
+    # 既存の教員割り当て情報を辞書にしておく
+    subject_info = {row[0]: {"instructor_id": row[1], "color": row[2], "id": row[3]} for row in cursor.fetchall()}
+    
+    subjects_list = []
+    for subj_title, hours in curriculum_map.items():
+        # 教科主任がまだ割り当てていない科目なら「未定」として扱う
+        info = subject_info.get(subj_title, {"instructor_id": "未定", "color": "#e2e8f0", "id": f"temp_{subj_title}"})
+        subjects_list.append({
+            "id": info["id"],
+            "title": subj_title,
+            "target_class": target_class,
+            "credits": hours, # 🌟カリキュラムのコマ数が確実にセットされる
+            "instructor_id": info["instructor_id"],
+            "color": info["color"]
+        })
     
     cursor.execute("SELECT id, name, available_days, max_periods_per_day FROM teachers")
     teachers_list = [{"id": r[0], "name": r[1], "available_days": [int(d) for d in r[2].split(',')], "max_periods": r[3]} for r in cursor.fetchall()]
@@ -104,7 +159,6 @@ def init_timetable(target_class: str = "1A"):
     timetable = load_timetable_from_db(target_class)
     conn.close()
     return {"subjects": subjects_list, "timetable": timetable, "teachers": teachers_list}
-
 @app.post("/api/save")
 def save_timetable(request: SaveTimetableRequest):
     conn = sqlite3.connect(DB_FILE)
@@ -286,23 +340,50 @@ def assign_teachers(assignments: List[TeacherAssignmentInput]):
     finally:
         conn.close()
 
-# 💡 【新規追加】教員ルールの個別更新API
 @app.post("/api/update-teacher")
 def update_teacher(update: TeacherUpdateInput):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    # [1, 3] のようなリストを "1,3" という文字列に変換してDBに保存
     days_str = ",".join(map(str, update.available_days))
     try:
-        cursor.execute("""
-            UPDATE teachers
-            SET available_days = ?, max_periods_per_day = ?
-            WHERE id = ?
-        """, (days_str, update.max_periods_per_day, update.id))
+        cursor.execute("UPDATE teachers SET available_days = ?, max_periods_per_day = ? WHERE id = ?", (days_str, update.max_periods_per_day, update.id))
         conn.commit()
         return {"status": "success", "message": "教員ルールを更新しました！"}
     except Exception as e:
         conn.rollback()
         return {"status": "error", "message": f"更新に失敗しました: {str(e)}"}
+    finally:
+        conn.close()
+
+# 💡 【新規】カリキュラム取得API
+@app.get("/api/curriculum")
+def get_curriculum():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, track_name, subject_name, hours_per_week FROM curriculum")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"id": r[0], "track_name": r[1], "subject_name": r[2], "hours_per_week": r[3]} for r in rows]
+
+# 💡 【新規】カリキュラム保存API（洗い替え）
+@app.post("/api/curriculum")
+def save_curriculum(curricula: List[CurriculumInput]):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    try:
+        if curricula:
+            track_name = curricula[0].track_name
+            cursor.execute("DELETE FROM curriculum WHERE track_name = ?", (track_name,))
+            for item in curricula:
+                new_id = str(uuid.uuid4())
+                cursor.execute("""
+                    INSERT INTO curriculum (id, track_name, subject_name, hours_per_week)
+                    VALUES (?, ?, ?, ?)
+                """, (new_id, item.track_name, item.subject_name, item.hours_per_week))
+        conn.commit()
+        return {"status": "success", "message": "カリキュラムを保存しました！"}
+    except Exception as e:
+        conn.rollback()
+        return {"status": "error", "message": f"エラーが発生しました: {str(e)}"}
     finally:
         conn.close()
