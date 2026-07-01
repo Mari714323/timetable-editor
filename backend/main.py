@@ -25,12 +25,19 @@ MOCK_TEACHERS = [
     {"id": "T003", "name": "佐藤先生", "available_days": "0,1,2,3,4", "max_periods_per_day": 4},
 ]
 
-# 💡 カリキュラムの初期データ
+# 💡 3つのマスタ用初期データ
+MOCK_CLASSES = [
+    {"id": "1A", "grade": 1, "room": 1, "track_name": "普通"},
+    {"id": "1B", "grade": 1, "room": 2, "track_name": "特進"},
+]
+MOCK_TRACKS = [
+    {"track_name": "普通", "total_hours": 30},
+    {"track_name": "特進", "total_hours": 32},
+]
 MOCK_CURRICULUM = [
-    {"id": "C001", "track_name": "普通", "subject_name": "数学I", "hours_per_week": 4},
-    {"id": "C002", "track_name": "普通", "subject_name": "コミュ英語I", "hours_per_week": 3},
-    {"id": "C003", "track_name": "特進", "subject_name": "数学I", "hours_per_week": 5},
-    {"id": "C004", "track_name": "特進", "subject_name": "コミュ英語I", "hours_per_week": 4},
+    {"id": "C001", "track_name": "普通", "subject_large": "国語", "subject_small": "現代文", "hours_per_week": 2},
+    {"id": "C002", "track_name": "普通", "subject_large": "国語", "subject_small": "古文", "hours_per_week": 2},
+    {"id": "C003", "track_name": "普通", "subject_large": "数学", "subject_small": "数学I", "hours_per_week": 4},
 ]
 
 def init_db():
@@ -53,10 +60,22 @@ def init_db():
         )
     """)
     
-    # 💡 【新規】カリキュラムテーブル作成
+    # 💡 古いテーブルを削除して3つのテーブルを新設（開発用リセット）
+    cursor.execute("DROP TABLE IF EXISTS curriculum")
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS classes (
+            id TEXT PRIMARY KEY, grade INTEGER, room INTEGER, track_name TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS tracks (
+            track_name TEXT PRIMARY KEY, total_hours INTEGER
+        )
+    """)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS curriculum (
-            id TEXT PRIMARY KEY, track_name TEXT, subject_name TEXT, hours_per_week INTEGER
+            id TEXT PRIMARY KEY, track_name TEXT, subject_large TEXT, subject_small TEXT, hours_per_week INTEGER
         )
     """)
     
@@ -69,16 +88,26 @@ def init_db():
     if cursor.fetchone()[0] == 0:
         for t in MOCK_TEACHERS:
             cursor.execute("INSERT INTO teachers VALUES (?, ?, ?, ?)", (t["id"], t["name"], t["available_days"], t["max_periods_per_day"]))
-            
+
+    cursor.execute("SELECT COUNT(*) FROM classes")
+    if cursor.fetchone()[0] == 0:
+        for c in MOCK_CLASSES:
+            cursor.execute("INSERT INTO classes VALUES (?, ?, ?, ?)", (c["id"], c["grade"], c["room"], c["track_name"]))
+
+    cursor.execute("SELECT COUNT(*) FROM tracks")
+    if cursor.fetchone()[0] == 0:
+        for t in MOCK_TRACKS:
+            cursor.execute("INSERT INTO tracks VALUES (?, ?)", (t["track_name"], t["total_hours"]))
+
     cursor.execute("SELECT COUNT(*) FROM curriculum")
     if cursor.fetchone()[0] == 0:
         for c in MOCK_CURRICULUM:
-            cursor.execute("INSERT INTO curriculum VALUES (?, ?, ?, ?)", (c["id"], c["track_name"], c["subject_name"], c["hours_per_week"]))
+            cursor.execute("INSERT INTO curriculum VALUES (?, ?, ?, ?, ?)", (c["id"], c["track_name"], c["subject_large"], c["subject_small"], c["hours_per_week"]))
             
     conn.commit()
     conn.close()
 
-init_db() 
+init_db()
 
 def load_timetable_from_db(target_class: str) -> dict:
     conn = sqlite3.connect(DB_FILE)
@@ -111,44 +140,51 @@ class TeacherUpdateInput(BaseModel):
     available_days: List[int]
     max_periods_per_day: int
 
-# 💡 カリキュラム入力用スキーマ
-class CurriculumInput(BaseModel):
+# 💡 各種マスタ用スキーマ
+class ClassInput(BaseModel):
+    id: str
+    grade: int
+    room: int
     track_name: str
-    subject_name: str
+
+class TrackInput(BaseModel):
+    track_name: str
+    total_hours: int
+
+class CurriculumDetailInput(BaseModel):
+    subject_large: str
+    subject_small: str
     hours_per_week: int
 
-# 💡 クラスと系統の紐付けマスタ（本来はDB管理ですが、今回はシンプルな定数で定義します）
-CLASS_TRACK_MAP = {
-    "1A": "普通",
-    "1B": "特進"
-}
+class CurriculumSaveRequest(BaseModel):
+    track_name: str
+    curricula: List[CurriculumDetailInput]
 
 @app.get("/api/init")
 def init_timetable(target_class: str = "1A"):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     
-    # 💡 1. 対象クラスがどの系統（普通/特進など）かを取得
-    track_name = CLASS_TRACK_MAP.get(target_class, "普通")
+    # 💡 1. データベースからクラス系統を取得
+    cursor.execute("SELECT track_name FROM classes WHERE id = ?", (target_class,))
+    row = cursor.fetchone()
+    track_name = row[0] if row else "普通"
     
-    # 💡 2. カリキュラムテーブルから、この系統の「科目名」と「必要時間数」を取得
-    cursor.execute("SELECT subject_name, hours_per_week FROM curriculum WHERE track_name = ?", (track_name,))
-    curriculum_map = {row[0]: row[1] for row in cursor.fetchall()}
+    # 💡 2. カリキュラムテーブルから「科目（小分類）」と「必要時間数」を取得
+    cursor.execute("SELECT subject_small, hours_per_week FROM curriculum WHERE track_name = ?", (track_name,))
+    curriculum_map = {r[0]: r[1] for r in cursor.fetchall()}
     
-    # 💡 3. 【修正】カリキュラムテーブルを主軸にして配置待ちリストを作成する！
     cursor.execute("SELECT title, instructor_id, color, id FROM subjects WHERE target_class = ?", (target_class,))
-    # 既存の教員割り当て情報を辞書にしておく
     subject_info = {row[0]: {"instructor_id": row[1], "color": row[2], "id": row[3]} for row in cursor.fetchall()}
     
     subjects_list = []
     for subj_title, hours in curriculum_map.items():
-        # 教科主任がまだ割り当てていない科目なら「未定」として扱う
         info = subject_info.get(subj_title, {"instructor_id": "未定", "color": "#e2e8f0", "id": f"temp_{subj_title}"})
         subjects_list.append({
             "id": info["id"],
             "title": subj_title,
             "target_class": target_class,
-            "credits": hours, # 🌟カリキュラムのコマ数が確実にセットされる
+            "credits": hours,
             "instructor_id": info["instructor_id"],
             "color": info["color"]
         })
@@ -157,8 +193,14 @@ def init_timetable(target_class: str = "1A"):
     teachers_list = [{"id": r[0], "name": r[1], "available_days": [int(d) for d in r[2].split(',')], "max_periods": r[3]} for r in cursor.fetchall()]
     
     timetable = load_timetable_from_db(target_class)
+
+    # 💡 フロントのプルダウン用に全クラス一覧も動的に返す
+    cursor.execute("SELECT id FROM classes ORDER BY grade, room")
+    classes_list = [r[0] for r in cursor.fetchall()]
+
     conn.close()
-    return {"subjects": subjects_list, "timetable": timetable, "teachers": teachers_list}
+    return {"subjects": subjects_list, "timetable": timetable, "teachers": teachers_list, "classes": classes_list}
+
 @app.post("/api/save")
 def save_timetable(request: SaveTimetableRequest):
     conn = sqlite3.connect(DB_FILE)
@@ -355,33 +397,96 @@ def update_teacher(update: TeacherUpdateInput):
     finally:
         conn.close()
 
-# 💡 【新規】カリキュラム取得API
+# 💡 【新規】クラスマスタ関連API
+@app.get("/api/classes")
+def get_classes():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT id, grade, room, track_name FROM classes ORDER BY grade, room")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"id": r[0], "grade": r[1], "room": r[2], "track_name": r[3]} for r in rows]
+
+@app.post("/api/classes")
+def save_class(cls: ClassInput):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO classes (id, grade, room, track_name) VALUES (?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET grade=excluded.grade, room=excluded.room, track_name=excluded.track_name
+        """, (cls.id, cls.grade, cls.room, cls.track_name))
+        conn.commit()
+        return {"status": "success", "message": f"クラス {cls.id} を保存しました。"}
+    except Exception as e:
+        conn.rollback()
+        return {"status": "error", "message": str(e)}
+    finally:
+        conn.close()
+
+# 💡 【新規】系統マスタ関連API
+@app.get("/api/tracks")
+def get_tracks():
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    cursor.execute("SELECT track_name, total_hours FROM tracks")
+    rows = cursor.fetchall()
+    conn.close()
+    return [{"track_name": r[0], "total_hours": r[1]} for r in rows]
+
+@app.post("/api/tracks")
+def save_track(track: TrackInput):
+    conn = sqlite3.connect(DB_FILE)
+    cursor = conn.cursor()
+    try:
+        cursor.execute("""
+            INSERT INTO tracks (track_name, total_hours) VALUES (?, ?)
+            ON CONFLICT(track_name) DO UPDATE SET total_hours=excluded.total_hours
+        """, (track.track_name, track.total_hours))
+        conn.commit()
+        return {"status": "success", "message": f"系統 {track.track_name} を保存しました。"}
+    except Exception as e:
+        conn.rollback()
+        return {"status": "error", "message": str(e)}
+    finally:
+        conn.close()
+
+# 💡 【修正】カリキュラム詳細マスタ取得・保存API
 @app.get("/api/curriculum")
 def get_curriculum():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
-    cursor.execute("SELECT id, track_name, subject_name, hours_per_week FROM curriculum")
+    cursor.execute("SELECT id, track_name, subject_large, subject_small, hours_per_week FROM curriculum")
     rows = cursor.fetchall()
     conn.close()
-    return [{"id": r[0], "track_name": r[1], "subject_name": r[2], "hours_per_week": r[3]} for r in rows]
+    return [{"id": r[0], "track_name": r[1], "subject_large": r[2], "subject_small": r[3], "hours_per_week": r[4]} for r in rows]
 
-# 💡 【新規】カリキュラム保存API（洗い替え）
 @app.post("/api/curriculum")
-def save_curriculum(curricula: List[CurriculumInput]):
+def save_curriculum(req: CurriculumSaveRequest):
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     try:
-        if curricula:
-            track_name = curricula[0].track_name
-            cursor.execute("DELETE FROM curriculum WHERE track_name = ?", (track_name,))
-            for item in curricula:
-                new_id = str(uuid.uuid4())
-                cursor.execute("""
-                    INSERT INTO curriculum (id, track_name, subject_name, hours_per_week)
-                    VALUES (?, ?, ?, ?)
-                """, (new_id, item.track_name, item.subject_name, item.hours_per_week))
+        # 分母と分子の自動チェック！
+        cursor.execute("SELECT total_hours FROM tracks WHERE track_name = ?", (req.track_name,))
+        row = cursor.fetchone()
+        if not row:
+            return {"status": "error", "message": f"系統 '{req.track_name}' が見つかりません。"}
+        
+        target_hours = row[0]
+        current_hours = sum(c.hours_per_week for c in req.curricula)
+        
+        if current_hours != target_hours:
+            return {"status": "error", "message": f"【エラー】合計コマ数が一致しません！ (目標: {target_hours}コマ, 現在: {current_hours}コマ)"}
+
+        cursor.execute("DELETE FROM curriculum WHERE track_name = ?", (req.track_name,))
+        for c in req.curricula:
+            new_id = str(uuid.uuid4())
+            cursor.execute("""
+                INSERT INTO curriculum (id, track_name, subject_large, subject_small, hours_per_week)
+                VALUES (?, ?, ?, ?, ?)
+            """, (new_id, req.track_name, c.subject_large, c.subject_small, c.hours_per_week))
         conn.commit()
-        return {"status": "success", "message": "カリキュラムを保存しました！"}
+        return {"status": "success", "message": f"{req.track_name} のカリキュラムを保存しました！"}
     except Exception as e:
         conn.rollback()
         return {"status": "error", "message": f"エラーが発生しました: {str(e)}"}

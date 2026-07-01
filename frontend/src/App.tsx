@@ -10,11 +10,24 @@ interface Teacher {
   max_periods: number;
 }
 
-// 💡 カリキュラムの型定義
+// 💡 マスタの型定義
+interface ClassItem {
+  id: string;
+  grade: number;
+  room: number;
+  track_name: string;
+}
+
+interface TrackItem {
+  track_name: string;
+  total_hours: number;
+}
+
 interface Curriculum {
   id: string;
   track_name: string;
-  subject_name: string;
+  subject_large: string;
+  subject_small: string;
   hours_per_week: number;
 }
 
@@ -67,11 +80,18 @@ function App() {
   const [subjects, setSubjects] = useState<Subject[]>([]);
   const [teachers, setTeachers] = useState<Teacher[]>([]);
   
-  // 💡 タブ切り替えとカリキュラム用のState
+  // 💡 各種マスタ用State
   const [kyomuTab, setKyomuTab] = useState<'timetable' | 'curriculum'>('timetable');
+  const [classesList, setClassesList] = useState<ClassItem[]>([]);
+  const [tracksList, setTracksList] = useState<TrackItem[]>([]);
   const [curricula, setCurricula] = useState<Curriculum[]>([]);
   const [selectedTrack, setSelectedTrack] = useState<string>('普通');
-  const [editingCurricula, setEditingCurricula] = useState<{subject_name: string, hours_per_week: number}[]>([]);
+  const [editingCurricula, setEditingCurricula] = useState<{subject_large: string, subject_small: string, hours_per_week: number}[]>([]);
+  
+  // 入力フォーム用State
+  const [newClass, setNewClass] = useState({ id: '', grade: 1, room: 1, track_name: '普通' });
+  const [newTrack, setNewTrack] = useState({ track_name: '', total_hours: 30 });
+  const [availableClasses, setAvailableClasses] = useState<string[]>(['1A', '1B']); 
 
   const [selectedSubject, setSelectedSubject] = useState<Subject | null>(null);
   const [timetable, setTimetable] = useState<{ [key: string]: { [key: string]: string | null } }>({});
@@ -91,11 +111,16 @@ function App() {
       .catch(err => console.error('稼働状況の取得に失敗しました:', err));
   };
 
-  const fetchCurriculum = () => {
-    fetch('/api/curriculum')
-      .then(res => res.json())
-      .then(data => setCurricula(data))
-      .catch(err => console.error('カリキュラム取得失敗:', err));
+  const fetchMasterData = () => {
+    Promise.all([
+      fetch('/api/classes').then(res => res.json()),
+      fetch('/api/tracks').then(res => res.json()),
+      fetch('/api/curriculum').then(res => res.json())
+    ]).then(([cData, tData, currData]) => {
+      setClassesList(cData);
+      setTracksList(tData);
+      setCurricula(currData);
+    }).catch(err => console.error('マスタデータ取得失敗:', err));
   };
 
   const fetchAllData = () => {
@@ -105,11 +130,12 @@ function App() {
         setSubjects(data.subjects);
         setTimetable(data.timetable);
         setTeachers(data.teachers || []);
+        if (data.classes && data.classes.length > 0) setAvailableClasses(data.classes);
         setSelectedSubject(null);
         fetchWorkload();
       })
       .catch((err) => console.error('データの取得に失敗しました:', err));
-    fetchCurriculum(); // 💡 カリキュラムも取得
+    fetchMasterData();
   };
 
   useEffect(() => {
@@ -117,10 +143,9 @@ function App() {
     fetchAllData();
   }, [currentClass, role]);
 
-  // 💡 系統が切り替わったときに編集用リストを更新
   useEffect(() => {
     const trackData = curricula.filter(c => c.track_name === selectedTrack);
-    setEditingCurricula(trackData.map(c => ({subject_name: c.subject_name, hours_per_week: c.hours_per_week})));
+    setEditingCurricula(trackData.map(c => ({subject_large: c.subject_large, subject_small: c.subject_small, hours_per_week: c.hours_per_week})));
   }, [selectedTrack, curricula]);
 
   const executeAssignment = (subject: Subject, dayIndex: number, period: number, fromDay?: number, fromPeriod?: number) => {
@@ -247,15 +272,33 @@ function App() {
     .catch(err => alert('通信エラーが発生しました。'));
   };
 
-  // 💡 カリキュラム編集用の関数
-  const handleCurriculumChange = (index: number, field: 'subject_name' | 'hours_per_week', value: string | number) => {
+  // 💡 マスタ保存用の関数
+  const handleSaveClass = () => {
+    fetch('/api/classes', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newClass)
+    }).then(res => res.json()).then(data => {
+      if(data.status === 'success') { fetchMasterData(); fetchAllData(); }
+      else alert(data.message);
+    });
+  };
+
+  const handleSaveTrack = () => {
+    fetch('/api/tracks', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(newTrack)
+    }).then(res => res.json()).then(data => {
+      if(data.status === 'success') fetchMasterData();
+      else alert(data.message);
+    });
+  };
+
+  const handleCurriculumChange = (index: number, field: 'subject_large' | 'subject_small' | 'hours_per_week', value: string | number) => {
     const updated = [...editingCurricula];
-    updated[index] = { ...updated[index], [field]: value };
+    updated[index] = { ...updated[index], [field]: value as never };
     setEditingCurricula(updated);
   };
 
   const addCurriculumRow = () => {
-    setEditingCurricula([...editingCurricula, { subject_name: '', hours_per_week: 1 }]);
+    setEditingCurricula([...editingCurricula, { subject_large: '', subject_small: '', hours_per_week: 1 }]);
   };
 
   const removeCurriculumRow = (index: number) => {
@@ -265,23 +308,18 @@ function App() {
   };
 
   const saveCurriculum = () => {
-    const payload = editingCurricula
-      .filter(c => c.subject_name.trim() !== '')
-      .map(c => ({
-        track_name: selectedTrack,
-        subject_name: c.subject_name,
-        hours_per_week: c.hours_per_week
-      }));
+    const payload = {
+      track_name: selectedTrack,
+      curricula: editingCurricula.filter(c => c.subject_small.trim() !== '')
+    };
     
     fetch('/api/curriculum', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
     })
     .then(res => res.json())
     .then(data => {
       alert(data.message);
-      fetchCurriculum();
+      if(data.status === 'success') fetchMasterData();
     })
     .catch(err => alert('保存に失敗しました'));
   };
@@ -411,8 +449,7 @@ function App() {
             <div style={{ display: 'flex', alignItems: 'center', gap: '8px', backgroundColor: '#f1f5f9', padding: '6px 12px', borderRadius: '6px', border: '1px solid #cbd5e1' }}>
               <label htmlFor="class-select" style={{ fontWeight: 'bold', color: '#475569', fontSize: '14px' }}>対象クラス:</label>
               <select id="class-select" value={currentClass} onChange={(e) => setCurrentClass(e.target.value)} style={{ padding: '4px 8px', fontSize: '16px', fontWeight: 'bold', borderRadius: '4px', border: '1px solid #94a3b8', cursor: 'pointer' }}>
-                <option value="1A">1A</option>
-                <option value="1B">1B</option>
+                {availableClasses.map(c => <option key={c} value={c}>{c}</option>)}
               </select>
             </div>
           )}
@@ -547,86 +584,116 @@ function App() {
             <Sidebar currentClass={currentClass} filteredSubjects={filteredSubjects} selectedSubject={selectedSubject} onSubjectSelect={setSelectedSubject} onDragStart={handleDragStart} workload={workload} timetable={timetable} />
           </>
         ) : (
-          // 💡 カリキュラム管理タブのUI
-          <section style={{ padding: '20px', width: '100%', maxWidth: '800px', margin: '0 auto', textAlign: 'left' }}>
-            <h2 style={{ fontSize: '24px', marginBottom: '20px', color: '#1e293b' }}>📚 カリキュラム管理</h2>
+          <section style={{ padding: '20px', width: '100%', maxWidth: '900px', margin: '0 auto', textAlign: 'left' }}>
+            <h2 style={{ fontSize: '24px', marginBottom: '20px', color: '#1e293b' }}>📚 カリキュラム管理（マスタ設定）</h2>
             
-            <div style={{ marginBottom: '20px', backgroundColor: '#f8fafc', padding: '15px', borderRadius: '8px', border: '1px solid #e2e8f0' }}>
-              <label style={{ fontWeight: 'bold', marginRight: '10px' }}>対象の系統:</label>
-              <select 
-                value={selectedTrack} 
-                onChange={(e) => setSelectedTrack(e.target.value)}
-                style={{ padding: '8px', borderRadius: '4px', border: '1px solid #cbd5e1', fontSize: '16px' }}
-              >
-                <option value="普通">普通科</option>
-                <option value="特進">特進科</option>
-                <option value="理系">理系</option>
-                <option value="文系">文系</option>
-              </select>
-            </div>
-            
-            <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '20px', backgroundColor: 'white', boxShadow: '0 1px 3px rgba(0,0,0,0.1)' }}>
-              <thead>
-                <tr style={{ backgroundColor: '#f1f5f9', borderBottom: '2px solid #cbd5e1' }}>
-                  <th style={{ padding: '12px', textAlign: 'left' }}>科目名</th>
-                  <th style={{ padding: '12px', textAlign: 'left' }}>週あたりのコマ数</th>
-                  <th style={{ padding: '12px', textAlign: 'center' }}>操作</th>
-                </tr>
-              </thead>
-              <tbody>
-                {editingCurricula.map((item, idx) => (
-                  <tr key={idx} style={{ borderBottom: '1px solid #e2e8f0' }}>
-                    <td style={{ padding: '12px' }}>
-                      <input 
-                        type="text" 
-                        value={item.subject_name} 
-                        onChange={(e) => handleCurriculumChange(idx, 'subject_name', e.target.value)} 
-                        style={{ padding: '8px', width: '90%', borderRadius: '4px', border: '1px solid #cbd5e1' }} 
-                        placeholder="例: 数学I" 
-                      />
-                    </td>
-                    <td style={{ padding: '12px' }}>
-                      <input 
-                        type="number" 
-                        min="1" max="15" 
-                        value={item.hours_per_week} 
-                        onChange={(e) => handleCurriculumChange(idx, 'hours_per_week', parseInt(e.target.value) || 1)} 
-                        style={{ padding: '8px', width: '80px', borderRadius: '4px', border: '1px solid #cbd5e1' }} 
-                      />
-                    </td>
-                    <td style={{ padding: '12px', textAlign: 'center' }}>
-                      <button 
-                        onClick={() => removeCurriculumRow(idx)} 
-                        style={{ color: '#e74c3c', cursor: 'pointer', border: 'none', background: 'none', fontWeight: 'bold' }}
-                      >
-                        削除
-                      </button>
-                    </td>
-                  </tr>
+            {/* 1. クラスマスタ設定 */}
+            <div style={{ marginBottom: '30px', backgroundColor: '#fff', padding: '20px', borderRadius: '8px', border: '1px solid #e2e8f0', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
+              <h3 style={{ marginTop: 0, fontSize: '18px', color: '#334155', borderBottom: '2px solid #f1f5f9', paddingBottom: '10px' }}>🏫 1. クラス・系統の紐付け</h3>
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '15px' }}>
+                <input type="text" placeholder="クラスID (例: 2A)" value={newClass.id} onChange={e => setNewClass({...newClass, id: e.target.value})} style={{ padding: '8px', width: '120px', borderRadius: '4px', border: '1px solid #cbd5e1' }} />
+                <input type="number" placeholder="学年" value={newClass.grade} onChange={e => setNewClass({...newClass, grade: parseInt(e.target.value) || 1})} style={{ padding: '8px', width: '60px', borderRadius: '4px', border: '1px solid #cbd5e1' }} />
+                <span>年</span>
+                <input type="number" placeholder="組" value={newClass.room} onChange={e => setNewClass({...newClass, room: parseInt(e.target.value) || 1})} style={{ padding: '8px', width: '60px', borderRadius: '4px', border: '1px solid #cbd5e1' }} />
+                <span>組</span>
+                <input type="text" placeholder="系統名 (例: 普通)" value={newClass.track_name} onChange={e => setNewClass({...newClass, track_name: e.target.value})} style={{ padding: '8px', width: '120px', borderRadius: '4px', border: '1px solid #cbd5e1' }} />
+                <button onClick={handleSaveClass} style={{ padding: '8px 16px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>追加・更新</button>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
+                {classesList.map(c => (
+                  <span key={c.id} style={{ backgroundColor: '#f1f5f9', padding: '4px 8px', borderRadius: '4px', fontSize: '14px', border: '1px solid #e2e8f0' }}>
+                    {c.id} ({c.grade}年{c.room}組 / {c.track_name})
+                  </span>
                 ))}
-                {editingCurricula.length === 0 && (
-                  <tr>
-                    <td colSpan={3} style={{ padding: '20px', textAlign: 'center', color: '#94a3b8' }}>
-                      この系統にはまだ科目が設定されていません。
-                    </td>
+              </div>
+            </div>
+
+            {/* 2. 系統ごとの合計コマ数設定 */}
+            <div style={{ marginBottom: '30px', backgroundColor: '#fff', padding: '20px', borderRadius: '8px', border: '1px solid #e2e8f0', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
+              <h3 style={{ marginTop: 0, fontSize: '18px', color: '#334155', borderBottom: '2px solid #f1f5f9', paddingBottom: '10px' }}>⏱️ 2. 系統ごとの1週間の合計コマ数</h3>
+              <div style={{ display: 'flex', gap: '10px', alignItems: 'center', marginBottom: '15px' }}>
+                <input type="text" placeholder="系統名 (例: 普通)" value={newTrack.track_name} onChange={e => setNewTrack({...newTrack, track_name: e.target.value})} style={{ padding: '8px', width: '150px', borderRadius: '4px', border: '1px solid #cbd5e1' }} />
+                <input type="number" placeholder="合計コマ数" value={newTrack.total_hours} onChange={e => setNewTrack({...newTrack, total_hours: parseInt(e.target.value) || 30})} style={{ padding: '8px', width: '100px', borderRadius: '4px', border: '1px solid #cbd5e1' }} />
+                <span>コマ</span>
+                <button onClick={handleSaveTrack} style={{ padding: '8px 16px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold' }}>設定・更新</button>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '15px' }}>
+                {tracksList.map(t => (
+                  <div key={t.track_name} style={{ backgroundColor: '#f1f5f9', padding: '8px 12px', borderRadius: '4px', fontSize: '14px', border: '1px solid #e2e8f0', fontWeight: 'bold' }}>
+                    {t.track_name}: <span style={{ color: '#e74c3c' }}>{t.total_hours}</span> コマ
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* 3. カリキュラム詳細設定 */}
+            <div style={{ backgroundColor: '#fff', padding: '20px', borderRadius: '8px', border: '1px solid #e2e8f0', boxShadow: '0 1px 3px rgba(0,0,0,0.05)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '15px', borderBottom: '2px solid #f1f5f9', paddingBottom: '10px' }}>
+                <h3 style={{ margin: 0, fontSize: '18px', color: '#334155' }}>📖 3. カリキュラム（教科・科目）設定</h3>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <label style={{ fontWeight: 'bold', color: '#475569' }}>対象系統:</label>
+                  <select value={selectedTrack} onChange={(e) => setSelectedTrack(e.target.value)} style={{ padding: '6px 12px', borderRadius: '4px', border: '1px solid #cbd5e1', fontSize: '14px', fontWeight: 'bold' }}>
+                    {tracksList.map(t => <option key={t.track_name} value={t.track_name}>{t.track_name}</option>)}
+                  </select>
+                </div>
+              </div>
+              
+              {(() => {
+                const targetTrack = tracksList.find(t => t.track_name === selectedTrack);
+                const targetTotal = targetTrack ? targetTrack.total_hours : 0;
+                const currentTotal = editingCurricula.reduce((sum, c) => sum + c.hours_per_week, 0);
+                const isMatch = currentTotal === targetTotal;
+                
+                return (
+                  <div style={{ marginBottom: '15px', padding: '10px', backgroundColor: isMatch ? '#ecfdf5' : '#fef2f2', border: `1px solid ${isMatch ? '#a7f3d0' : '#fecaca'}`, borderRadius: '6px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <span style={{ fontWeight: 'bold', color: isMatch ? '#059669' : '#e11d48' }}>
+                      {isMatch ? '✅ コマ数が一致しています！' : '⚠️ 合計コマ数が目標と一致していません！'}
+                    </span>
+                    <span style={{ fontWeight: 'bold', fontSize: '18px', color: isMatch ? '#059669' : '#e11d48' }}>
+                      現在: {currentTotal} / 目標: {targetTotal} コマ
+                    </span>
+                  </div>
+                );
+              })()}
+
+              <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: '20px' }}>
+                <thead>
+                  <tr style={{ backgroundColor: '#f8fafc', borderBottom: '2px solid #cbd5e1' }}>
+                    <th style={{ padding: '12px', textAlign: 'left' }}>大分類（教科）</th>
+                    <th style={{ padding: '12px', textAlign: 'left' }}>小分類（科目）</th>
+                    <th style={{ padding: '12px', textAlign: 'center' }}>週コマ数</th>
+                    <th style={{ padding: '12px', textAlign: 'center' }}>操作</th>
                   </tr>
-                )}
-              </tbody>
-            </table>
-            
-            <div style={{ display: 'flex', gap: '15px' }}>
-              <button 
-                onClick={addCurriculumRow} 
-                style={{ padding: '10px 20px', backgroundColor: '#94a3b8', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}
-              >
-                ＋ 科目を追加
-              </button>
-              <button 
-                onClick={saveCurriculum} 
-                style={{ padding: '10px 20px', backgroundColor: '#3498db', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}
-              >
-                変更を保存
-              </button>
+                </thead>
+                <tbody>
+                  {editingCurricula.map((item, idx) => (
+                    <tr key={idx} style={{ borderBottom: '1px solid #e2e8f0' }}>
+                      <td style={{ padding: '8px' }}>
+                        <input type="text" value={item.subject_large} onChange={(e) => handleCurriculumChange(idx, 'subject_large', e.target.value)} style={{ padding: '6px', width: '90%', borderRadius: '4px', border: '1px solid #cbd5e1' }} placeholder="例: 国語" />
+                      </td>
+                      <td style={{ padding: '8px' }}>
+                        <input type="text" value={item.subject_small} onChange={(e) => handleCurriculumChange(idx, 'subject_small', e.target.value)} style={{ padding: '6px', width: '90%', borderRadius: '4px', border: '1px solid #cbd5e1' }} placeholder="例: 現代文" />
+                      </td>
+                      <td style={{ padding: '8px', textAlign: 'center' }}>
+                        <input type="number" min="1" max="15" value={item.hours_per_week} onChange={(e) => handleCurriculumChange(idx, 'hours_per_week', parseInt(e.target.value) || 1)} style={{ padding: '6px', width: '60px', borderRadius: '4px', border: '1px solid #cbd5e1', textAlign: 'center' }} />
+                      </td>
+                      <td style={{ padding: '8px', textAlign: 'center' }}>
+                        <button onClick={() => removeCurriculumRow(idx)} style={{ color: '#e74c3c', cursor: 'pointer', border: 'none', background: 'none', fontWeight: 'bold' }}>削除</button>
+                      </td>
+                    </tr>
+                  ))}
+                  {editingCurricula.length === 0 && (
+                    <tr>
+                      <td colSpan={4} style={{ padding: '20px', textAlign: 'center', color: '#94a3b8' }}>この系統にはまだ科目が設定されていません。</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+              
+              <div style={{ display: 'flex', gap: '15px' }}>
+                <button onClick={addCurriculumRow} style={{ padding: '10px 20px', backgroundColor: '#94a3b8', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold' }}>＋ 科目を追加</button>
+                <button onClick={saveCurriculum} style={{ padding: '10px 20px', backgroundColor: '#10b981', color: 'white', border: 'none', borderRadius: '6px', cursor: 'pointer', fontWeight: 'bold', boxShadow: '0 2px 4px rgba(0,0,0,0.1)' }}>変更を保存</button>
+              </div>
             </div>
           </section>
         )}
